@@ -90,11 +90,8 @@ if __name__ == "__main__":
     
     # Start the server
     import os
-    from cloudlink.server import CloudLinkServer
 
-    if __name__ == "__main__":
-        port = int(os.environ.get("PORT", 3000))  # Render donne PORT automatiquement
-        server = CloudLinkServer()
-        server.run("0.0.0.0", port)
+    port = int(os.environ.get("PORT", 3000))  # Render fournit le port via la variable d'environnement
+    server.run(ip="0.0.0.0", port=port)
 
 
