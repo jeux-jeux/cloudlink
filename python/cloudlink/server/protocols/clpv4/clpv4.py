@@ -801,15 +801,42 @@ class clpv4:
 from flask import Flask, request, jsonify
 import asyncio
 import threading
-from cloudlink.client import CloudLinkClient  # client pour se connecter à ton serveur existant
+import os
+import requests
+from cloudlink.client import CloudLinkClient
 
 app = Flask(__name__)
 
-# Connexion à ton serveur CloudLink existant
-CLOUDLINK_URL = "wss://"  # remplace par ton URL
+# Récupération de la clé et de l’URL de l’API
+API_URL = os.getenv("CLOUDLINK_API_URL")  # ex: https://mon-api/get-server
+SECRET_KEY = os.getenv("CLOUDLINK_SECRET_KEY")  # ta clé secrète
+
+# Fonction pour récupérer dynamiquement l’URL du serveur CloudLink
+def get_cloudlink_url():
+    try:
+        response = requests.post(
+            API_URL,
+            json={"cle": SECRET_KEY},
+            headers={"Content-Type": "application/json"}
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("web_socket_server")
+        else:
+            print("Erreur API:", response.status_code, response.text)
+            return None
+    except Exception as e:
+        print("Erreur lors de la récupération de l'URL CloudLink:", e)
+        return None
+
+# Initialisation du client CloudLink
+CLOUDLINK_URL = get_cloudlink_url()
+if not CLOUDLINK_URL:
+    raise RuntimeError("Impossible de récupérer l'URL CloudLink depuis l'API")
+
 cl_client = CloudLinkClient(CLOUDLINK_URL)
 
-# Thread pour lancer la connexion WebSocket CloudLink
+# Thread pour maintenir la connexion WebSocket CloudLink
 def run_client():
     asyncio.run(cl_client.connect())
 
