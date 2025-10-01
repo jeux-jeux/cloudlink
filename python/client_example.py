@@ -45,4 +45,4 @@ if __name__ == "__main__":
     #client.enable_ssl(certfile="cert.pem")
 
     # Start the client
-    client.run(host="ws://127.0.0.1:3000/")
+    client.run(host="wss://cloudlink-server.onrender.com/")
