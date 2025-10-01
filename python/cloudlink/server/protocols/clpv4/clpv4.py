@@ -806,7 +806,7 @@ from cloudlink.client import CloudLinkClient  # client pour se connecter à ton 
 app = Flask(__name__)
 
 # Connexion à ton serveur CloudLink existant
-CLOUDLINK_URL = "wss://secret/"  # remplace par ton URL
+CLOUDLINK_URL = "wss://"  # remplace par ton URL
 cl_client = CloudLinkClient(CLOUDLINK_URL)
 
 # Thread pour lancer la connexion WebSocket CloudLink
