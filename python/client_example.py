@@ -1,48 +1,108 @@
-from cloudlink import client
+from flask import Flask, request, jsonify
+import requests
+import os
+import asyncio
+import threading
+from cloudlink import client as cl_client
 
-if __name__ == "__main__":
-    # Initialize the client
-    client = client()
-    
-    # Configure logging settings
-    client.logging.basicConfig(
-        level=client.logging.DEBUG
-    )
+app = Flask(__name__)
 
-    # Use this decorator to handle established connections.
+# ============================
+# Récupération de l’URL CloudLink depuis un endpoint
+# ============================
+AUTH_KEY = os.getenv("CLOUDLINK_KEY")
+DISCOVERY_URL = os.getenv("DISCOVERY_URL", "https://mon-endpoint.com/get-server")
+
+def get_cloudlink_url():
+    try:
+        resp = requests.post(DISCOVERY_URL, json={"cle": AUTH_KEY})
+        data = resp.json()
+        return data.get("web_socket_server")
+    except Exception as e:
+        print("❌ Erreur récupération CloudLink URL:", e)
+        return None
+
+# ============================
+# Fonction générique : connecte → envoie → déconnecte
+# ============================
+async def cloudlink_action(action):
+    url = get_cloudlink_url()
+    if not url:
+        return {"status": "error", "message": "Impossible de récupérer l’URL CloudLink"}
+
+    client = cl_client()
+    done = asyncio.Event()
+
     @client.on_connect
     async def on_connect():
-        print("Connected!")
+        print("✅ Connecté à CloudLink:", url)
+        await client.protocol.set_username("proxy_bot")
+        await action(client)
+        client.disconnect()
 
-        # Ask for a username
-        await client.protocol.set_username(input("Please give me a username... "))
-
-        # Whenever a client is connected, you can call this function to gracefully disconnect.
-        # client.disconnect()
-    
-    # Use this decorator to handle disconnects.
     @client.on_disconnect
     async def on_disconnect():
-        print("Disconnected!")
-    
-    # Use this decorator to handle username being set events.
-    @client.on_username_set
-    async def on_username_set(id, name, uuid):
-        print(f"My username has been set! ID: {id}, Name: {name}, UUID: {uuid}")
-    
-    # Example message-specific event handler. You can use different kinds of message types,
-    # such as pmsg, gvar, pvar, and more.
-    @client.on_gmsg
-    async def on_gmsg(message):
-        print(f"I got a global message! It says: \"{message['val']}\".")
+        print("❌ Déconnecté")
+        done.set()
 
-    # Example use of on_command functions within the client.
-    @client.on_command(cmd="gmsg")
-    async def on_gmsg(message):
-        client.send_packet({"cmd": "direct", "val": "Hello, server!"})
+    threading.Thread(target=lambda: client.run(host=url), daemon=True).start()
 
-    # Enable SSL support (if you use self-generated SSL certificates)
-    #client.enable_ssl(certfile="cert.pem")
+    await done.wait()
+    return {"status": "ok"}
 
-    # Start the client
-    client.run(host="wss://cloudlink-server.onrender.com/")
+# ============================
+# Routes HTTP
+# ============================
+@app.route("/global-message", methods=["POST"])
+def global_message():
+    data = request.get_json()
+    rooms = data.get("rooms", [])
+    message = data.get("message", "")
+
+    async def action(client):
+        await client.protocol.send_gmsg(message, rooms=rooms)
+
+    return jsonify(asyncio.run(cloudlink_action(action)))
+
+@app.route("/private-message", methods=["POST"])
+def private_message():
+    data = request.get_json()
+    username = data.get("username")
+    room = data.get("room")
+    message = data.get("message")
+
+    async def action(client):
+        await client.protocol.send_pmsg(username, room, message)
+
+    return jsonify(asyncio.run(cloudlink_action(action)))
+
+@app.route("/global-variable", methods=["POST"])
+def global_variable():
+    data = request.get_json()
+    room = data.get("room")
+    name = data.get("name")
+    val = data.get("val")
+
+    async def action(client):
+        await client.protocol.send_gvar(room, name, val)
+
+    return jsonify(asyncio.run(cloudlink_action(action)))
+
+@app.route("/private-variable", methods=["POST"])
+def private_variable():
+    data = request.get_json()
+    username = data.get("username")
+    room = data.get("room")
+    name = data.get("name")
+    val = data.get("val")
+
+    async def action(client):
+        await client.protocol.send_pvar(username, room, name, val)
+
+    return jsonify(asyncio.run(cloudlink_action(action)))
+
+# ============================
+# Lancement Flask
+# ============================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
