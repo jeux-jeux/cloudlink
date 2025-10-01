@@ -798,3 +798,72 @@ class clpv4:
 
                 # Stop direct command
                 return
+from flask import Flask, request, jsonify
+import asyncio
+import threading
+from cloudlink.client import CloudLinkClient  # client pour se connecter à ton serveur existant
+
+app = Flask(__name__)
+
+# Connexion à ton serveur CloudLink existant
+CLOUDLINK_URL = "wss://secret/"  # remplace par ton URL
+cl_client = CloudLinkClient(CLOUDLINK_URL)
+
+# Thread pour lancer la connexion WebSocket CloudLink
+def run_client():
+    asyncio.run(cl_client.connect())
+
+threading.Thread(target=run_client, daemon=True).start()
+
+# Fonctions async pour envoyer les commandes
+async def send_gmsg(rooms, message):
+    await cl_client.send_gmsg(rooms, message)
+
+async def send_pmsg(username, room, message):
+    await cl_client.send_pmsg(username, room, message)
+
+async def send_gvar(room, name, val):
+    await cl_client.send_gvar(room, name, val)
+
+async def send_pvar(username, room, name, val):
+    await cl_client.send_pvar(username, room, name, val)
+
+# Routes HTTP POST
+@app.route("/global-message", methods=["POST"])
+def global_message():
+    data = request.get_json()
+    rooms = data.get("rooms", [])
+    message = data.get("message", "")
+    asyncio.run(send_gmsg(rooms, message))
+    return jsonify({"status": "ok"})
+
+@app.route("/private-message", methods=["POST"])
+def private_message():
+    data = request.get_json()
+    username = data.get("username")
+    room = data.get("room")
+    message = data.get("message")
+    asyncio.run(send_pmsg(username, room, message))
+    return jsonify({"status": "ok"})
+
+@app.route("/global-variable", methods=["POST"])
+def global_variable():
+    data = request.get_json()
+    room = data.get("room")
+    name = data.get("name")
+    val = data.get("val")
+    asyncio.run(send_gvar(room, name, val))
+    return jsonify({"status": "ok"})
+
+@app.route("/private-variable", methods=["POST"])
+def private_variable():
+    data = request.get_json()
+    username = data.get("username")
+    room = data.get("room")
+    name = data.get("name")
+    val = data.get("val")
+    asyncio.run(send_pvar(username, room, name, val))
+    return jsonify({"status": "ok"})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
