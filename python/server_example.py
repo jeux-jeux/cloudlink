@@ -1,97 +1,157 @@
-from cloudlink import server
-from cloudlink.server.protocols import clpv4, scratch
+# proxy.py
+import os
+import requests
 import asyncio
+import threading
+import random
+import traceback
+from flask import Flask, request, jsonify
+from cloudlink import client as cl_client
 
+app = Flask(__name__)
 
-class example_callbacks:
-    def __init__(self, parent):
-        self.parent = parent
+# === Configuration (env) ===
+# REQUIRED:
+DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").strip()   # ex: https://example.com/get-server
+CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()   # cle secrète à envoyer à DISCOVERY_URL
 
-    async def test1(self, client, message):
-        print("Test1!")
-        await asyncio.sleep(1)
-        print("Test1 after one second!")
-    
-    async def test2(self, client, message):
-        print("Test2!")
-        await asyncio.sleep(1)
-        print("Test2 after one second!")
-    
-    async def test3(self, client, message):
-        print("Test3!")
+# Optional: keep it empty — we generate a username each request
+# PROXY_USERNAME_FIXED = os.getenv("PROXY_USERNAME", "").strip()
 
+# === Helpers ===
+def discover_cloudlink_url():
+    """POST {cle: CLOUDLINK_KEY} to DISCOVERY_URL and return web_socket_server string."""
+    if not DISCOVERY_URL or not CLOUDLINK_KEY:
+        return None, "DISCOVERY_URL or CLOUDLINK_KEY not set"
+    try:
+        resp = requests.post(DISCOVERY_URL, json={"cle": CLOUDLINK_KEY}, timeout=8)
+        resp.raise_for_status()
+        j = resp.json()
+        url = j.get("web_socket_server")
+        if not url:
+            return None, "discovery response missing 'web_socket_server'"
+        return url, None
+    except Exception as e:
+        return None, f"discovery error: {str(e)}"
 
-class example_commands:
-    def __init__(self, parent, protocol):
-        
-        # Creating custom commands - This example adds a custom command called "foobar".
-        @server.on_command(cmd="foobar", schema=protocol.schema)
-        async def foobar(client, message):
-            print("Foobar!")
+# === Core: connect -> do action -> disconnect (no timeout) ===
+async def cloudlink_action_async(action_coro):
+    """
+    action_coro: async function(client, username)
+    No external timeout — waits until disconnect occurs.
+    Returns dict with status and username (and error detail on failure).
+    """
+    url, err = discover_cloudlink_url()
+    if not url:
+        return {"status": "error", "message": "discovery_failed", "detail": err}
 
-            # Reading the IP address of the client is as easy as calling get_client_ip from the clpv4 protocol object.
-            print(protocol.get_client_ip(client))
+    client = cl_client()
+    finished = asyncio.Event()
+    result = {"ok": False, "error": None, "username": None}
 
-            # In case you need to report a status code, use send_statuscode.
-            protocol.send_statuscode(
-                client=client,
-                code=protocol.statuscodes.ok,
-                message=message
-            )
+    @client.on_connect
+    async def _on_connect():
+        try:
+            # generate random 9-digit username for this session
+            username = str(random.randint(100_000_000, 999_999_999))
+            result["username"] = username
 
+            await client.protocol.set_username(username)
+            # perform user action (send gmsg / pmsg / gvar / pvar)
+            await action_coro(client, username)
+            result["ok"] = True
+        except Exception as e:
+            result["error"] = str(e)
+            traceback.print_exc()
+        finally:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
 
-class example_events:
-    def __init__(self):
-        pass
+    @client.on_disconnect
+    async def _on_disconnect():
+        finished.set()
 
-    async def on_close(self, client):
-        print("Client", client.id, "disconnected.")
+    # run the cloudlink client (blocking) in a background thread
+    thread = threading.Thread(target=lambda: client.run(host=url), daemon=True)
+    thread.start()
 
-    async def on_connect(self, client):
-        print("Client", client.id, "connected.") 
+    # WAIT INDEFINITELY for disconnect (user requested no timeout)
+    await finished.wait()
 
+    if result["ok"]:
+        return {"status": "ok", "username": result.get("username")}
+    else:
+        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
 
+def cloudlink_action(action_coro):
+    return asyncio.run(cloudlink_action_async(action_coro))
+
+# === Routes ===
+
+@app.route("/global-message", methods=["POST"])
+def route_global_message():
+    data = request.get_json(force=True, silent=True) or {}
+    rooms = data.get("rooms")
+    message = data.get("message")
+    if not isinstance(rooms, list) or not message:
+        return jsonify({"status":"error","message":"rooms (list) and message required"}), 400
+
+    async def action(client, username):
+        await client.protocol.send_gmsg(message, rooms=rooms)
+
+    return jsonify(cloudlink_action(action))
+
+@app.route("/private-message", methods=["POST"])
+def route_private_message():
+    data = request.get_json(force=True, silent=True) or {}
+    username_target = data.get("username")
+    room = data.get("room")
+    message = data.get("message")
+    if not username_target or not room or not message:
+        return jsonify({"status":"error","message":"username, room and message required"}), 400
+
+    async def action(client, username):
+        await client.protocol.send_pmsg(username_target, room, message)
+
+    return jsonify(cloudlink_action(action))
+
+@app.route("/global-variable", methods=["POST"])
+def route_global_variable():
+    data = request.get_json(force=True, silent=True) or {}
+    room = data.get("room")
+    name = data.get("name")
+    val = data.get("val")
+    if not room or name is None:
+        return jsonify({"status":"error","message":"room and name required"}), 400
+
+    async def action(client, username):
+        await client.protocol.send_gvar(room, name, val)
+
+    return jsonify(cloudlink_action(action))
+
+@app.route("/private-variable", methods=["POST"])
+def route_private_variable():
+    data = request.get_json(force=True, silent=True) or {}
+    username_target = data.get("username")
+    room = data.get("room")
+    name = data.get("name")
+    val = data.get("val")
+    if not username_target or not room or name is None:
+        return jsonify({"status":"error","message":"username, room and name required"}), 400
+
+    async def action(client, username):
+        await client.protocol.send_pvar(username_target, room, name, val)
+
+    return jsonify(cloudlink_action(action))
+
+# simple health
+@app.route("/_health", methods=["GET"])
+def health():
+    return jsonify({"status":"ok"})
+
+# === Launch ===
 if __name__ == "__main__":
-    # Initialize the server
-    server = server()
-    
-    # Configure logging settings
-    server.logging.basicConfig(
-        level=server.logging.DEBUG
-    )
-
-    # Load protocols
-    clpv4 = clpv4(server)
-    scratch = scratch(server)
-
-    # Load examples
-    callbacks = example_callbacks(server)
-    commands = example_commands(server, clpv4)
-    events = example_events()
-
-    # Binding callbacks - This example binds the "handshake" command with example callbacks.
-    # You can bind as many functions as you want to a callback, but they must use async.
-    # To bind callbacks to built-in methods (example: gmsg), see cloudlink.cl_methods.
-    server.bind_callback(cmd="handshake", schema=clpv4.schema, method=callbacks.test1)
-    server.bind_callback(cmd="handshake", schema=clpv4.schema, method=callbacks.test2)
-
-    # Binding events - This example will print a client connect/disconnect message.
-    # You can bind as many functions as you want to an event, but they must use async.
-    # To see all possible events for the server, see cloudlink.events.
-    server.bind_event(server.on_connect, events.on_connect)
-    server.bind_event(server.on_disconnect, events.on_close)
-
-    # You can also bind an event to a custom command. We'll bind callbacks.test3 to our 
-    # foobar command from earlier.
-    server.bind_callback(cmd="foobar", schema=clpv4.schema, method=callbacks.test3)
-
-    # Initialize SSL support
-    # server.enable_ssl(certfile="cert.pem", keyfile="privkey.pem")
-    
-    # Start the server
-    import os
-
-    port = int(os.environ.get("PORT", 3000))  # Render fournit le port via la variable d'environnement
-    server.run(ip="0.0.0.0", port=port)
-
-
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
