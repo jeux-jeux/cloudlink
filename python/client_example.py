@@ -4,72 +4,65 @@ import requests
 import asyncio
 import threading
 import random
+import traceback
 from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
 
 app = Flask(__name__)
 
-# ---------- Configuration via env ----------
-CLOUDLINK_OVERRIDE_URL = os.getenv("CLOUDLINK_OVERRIDE_URL", "").strip()
-DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").strip()
-CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()
-PROXY_USERNAME = os.getenv("PROXY_USERNAME", "").strip()  # optional fixed username
-ACTION_TIMEOUT = float(os.getenv("ACTION_TIMEOUT", "15.0"))
+# === Configuration (env) ===
+# REQUIRED:
+DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").strip()   # ex: https://example.com/get-server
+CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()   # cle secrète à envoyer à DISCOVERY_URL
 
-# ---------- Utilities ----------
-def discover_url():
+# Optional: keep it empty — we generate a username each request
+# PROXY_USERNAME_FIXED = os.getenv("PROXY_USERNAME", "").strip()
+
+# === Helpers ===
+def discover_cloudlink_url():
+    """POST {cle: CLOUDLINK_KEY} to DISCOVERY_URL and return web_socket_server string."""
     if not DISCOVERY_URL or not CLOUDLINK_KEY:
-        return None
+        return None, "DISCOVERY_URL or CLOUDLINK_KEY not set"
     try:
-        resp = requests.post(DISCOVERY_URL, json={"cle": CLOUDLINK_KEY}, timeout=6)
+        resp = requests.post(DISCOVERY_URL, json={"cle": CLOUDLINK_KEY}, timeout=8)
         resp.raise_for_status()
         j = resp.json()
-        return j.get("web_socket_server")
+        url = j.get("web_socket_server")
+        if not url:
+            return None, "discovery response missing 'web_socket_server'"
+        return url, None
     except Exception as e:
-        print("Discovery failed:", e)
-        return None
+        return None, f"discovery error: {str(e)}"
 
-def choose_cloudlink_url():
-    if CLOUDLINK_OVERRIDE_URL:
-        print("Using override CloudLink URL:", CLOUDLINK_OVERRIDE_URL)
-        return CLOUDLINK_OVERRIDE_URL
-    url = discover_url()
-    if url:
-        print("Discovered CloudLink URL:", url)
-        return url
-    return None
-
-# ---------- Core: connect -> do action -> disconnect ----------
+# === Core: connect -> do action -> disconnect (no timeout) ===
 async def cloudlink_action_async(action_coro):
     """
-    action_coro: async function(client, username) that performs the protocol action(s).
-    Returns dict result (includes username used).
+    action_coro: async function(client, username)
+    No external timeout — waits until disconnect occurs.
+    Returns dict with status and username (and error detail on failure).
     """
-    url = choose_cloudlink_url()
+    url, err = discover_cloudlink_url()
     if not url:
-        return {"status": "error", "message": "No CloudLink URL available (set CLOUDLINK_OVERRIDE_URL or DISCOVERY_URL+CLOUDLINK_KEY)"}
+        return {"status": "error", "message": "discovery_failed", "detail": err}
 
     client = cl_client()
     finished = asyncio.Event()
-    result_holder = {"ok": False, "error": None, "username": None}
+    result = {"ok": False, "error": None, "username": None}
 
     @client.on_connect
     async def _on_connect():
         try:
-            # Determine username: use fixed PROXY_USERNAME if set, otherwise random 9-digit number
-            if PROXY_USERNAME:
-                username = PROXY_USERNAME
-            else:
-                username = str(random.randint(100_000_000, 999_999_999))
-            result_holder["username"] = username
+            # generate random 9-digit username for this session
+            username = str(random.randint(100_000_000, 999_999_999))
+            result["username"] = username
 
             await client.protocol.set_username(username)
-            # execute provided coroutine (it receives the client as argument)
+            # perform user action (send gmsg / pmsg / gvar / pvar)
             await action_coro(client, username)
-            result_holder["ok"] = True
+            result["ok"] = True
         except Exception as e:
-            print("Error during action:", e)
-            result_holder["error"] = str(e)
+            result["error"] = str(e)
+            traceback.print_exc()
         finally:
             try:
                 client.disconnect()
@@ -80,25 +73,23 @@ async def cloudlink_action_async(action_coro):
     async def _on_disconnect():
         finished.set()
 
-    # Run the CloudLink client in background thread
+    # run the cloudlink client (blocking) in a background thread
     thread = threading.Thread(target=lambda: client.run(host=url), daemon=True)
     thread.start()
 
-    # Wait for completion or timeout
-    try:
-        await asyncio.wait_for(finished.wait(), timeout=ACTION_TIMEOUT)
-    except asyncio.TimeoutError:
-        return {"status": "error", "message": "Timeout waiting for CloudLink action/disconnect"}
+    # WAIT INDEFINITELY for disconnect (user requested no timeout)
+    await finished.wait()
 
-    if result_holder["ok"]:
-        return {"status": "ok", "username": result_holder["username"]}
+    if result["ok"]:
+        return {"status": "ok", "username": result.get("username")}
     else:
-        return {"status": "error", "message": result_holder["error"] or "unknown", "username": result_holder.get("username")}
+        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
 
 def cloudlink_action(action_coro):
     return asyncio.run(cloudlink_action_async(action_coro))
 
-# ---------- Routes HTTP ----------
+# === Routes ===
+
 @app.route("/global-message", methods=["POST"])
 def route_global_message():
     data = request.get_json(force=True, silent=True) or {}
@@ -155,7 +146,12 @@ def route_private_variable():
 
     return jsonify(cloudlink_action(action))
 
-# ---------- Start ----------
+# simple health
+@app.route("/_health", methods=["GET"])
+def health():
+    return jsonify({"status":"ok"})
+
+# === Launch ===
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "3000"))
+    port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
