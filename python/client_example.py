@@ -13,6 +13,8 @@ app = Flask(__name__)
 # Ici, on n’utilise plus DISCOVERY_URL ni CLOUDLINK_KEY
 CLOUDLINK_URL = "wss://cloudlink-server.onrender.com/"
 
+
+
 # === Core: connect -> do action -> disconnect ===
 async def cloudlink_action_async(action_coro):
     client = cl_client()
@@ -43,6 +45,14 @@ async def cloudlink_action_async(action_coro):
         finished.set()
 
     # Lancement du client cloudlink
+    thread = threading.Thread(
+        target=lambda: client.run(
+            host=CLOUDLINK_URL,
+            headers={"Origin": "tw-editor://."}  # 👈 indispensable pour passer Cloudflare
+        ),
+        daemon=True
+    )
+
     thread = threading.Thread(target=lambda: client.run(host=CLOUDLINK_URL), daemon=True)
     thread.start()
 
