@@ -6,7 +6,12 @@ import threading
 import random
 import traceback
 import json
+import ssl
 from flask import Flask, request, jsonify
+
+# ajouter cette dépendance : pip install websockets
+import websockets
+
 from cloudlink import client as cl_client
 
 app = Flask(__name__)
@@ -17,6 +22,7 @@ CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()
 
 DISCOVERY_TIMEOUT = 8
 CONNECTION_TIMEOUT = int(os.getenv("CONNECTION_TIMEOUT", "10"))
+WS_PRECHECK_TIMEOUT = int(os.getenv("WS_PRECHECK_TIMEOUT", "5"))  # test handshake timeout
 
 def discover_cloudlink_url():
     """
@@ -49,21 +55,48 @@ def discover_cloudlink_url():
             return None, "discovery response missing 'web_socket_server'"
 
         if isinstance(url, str):
-            url = url.replace("\\", "")
-            url = url.rstrip("/")
+            url = url.replace("\\", "")   # virer backslashes
+            url = url.rstrip("/")        # enlever slash final si présent
 
         return url, None
     except Exception as e:
         return None, f"discovery error: {str(e)}"
 
-# === Core: connect -> do action -> disconnect (with timeout, no blocking) ===
+async def ws_handshake_check(url, timeout=WS_PRECHECK_TIMEOUT):
+    """
+    Teste rapidement si un handshake WebSocket peut s'établir.
+    Retourne (True, None) si OK, (False, error_message) sinon.
+    """
+    # websockets.connect attend une URL wss:// ou ws:// sans slash final idéalement
+    try:
+        ssl_ctx = ssl.create_default_context()
+        # set maximum timeout avec asyncio.wait_for
+        async def _connect_once():
+            async with websockets.connect(url, ssl=ssl_ctx) as ws:
+                # envoyer/recevoir n'est pas nécessaire; juste ouvrir/fermer handshake
+                return True
+
+        await asyncio.wait_for(_connect_once(), timeout=timeout)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+# === Core: connect -> do action -> disconnect (with timeout, pre-check, no blocking) ===
 async def cloudlink_action_async(action_coro):
+    # découverte
     url, err = discover_cloudlink_url()
     if not url:
         return {"status": "error", "message": "discovery_failed", "detail": err}
 
-    print(f"[proxy] Tentative de connexion Cloudlink sur: {url}")
+    print(f"[proxy] URL découverte pour Cloudlink: {url}")
 
+    # Pré-check WebSocket : si le handshake ne passe pas, on renvoie une erreur immédiate
+    ok, err = await ws_handshake_check(url, timeout=WS_PRECHECK_TIMEOUT)
+    if not ok:
+        print(f"[proxy] Pré-check WebSocket échoué: {err}")
+        return {"status": "error", "message": "ws_precheck_failed", "detail": err}
+
+    # Si pré-check OK, lancer le client cloudlink
     client = cl_client()
     finished = asyncio.Event()
     result = {"ok": False, "error": None, "username": None}
@@ -93,6 +126,7 @@ async def cloudlink_action_async(action_coro):
         print("[proxy] on_disconnect called")
         finished.set()
 
+    # run the cloudlink client (blocking) in a background thread
     thread = threading.Thread(target=lambda: client.run(host=url), daemon=True)
     thread.start()
 
@@ -108,7 +142,6 @@ async def cloudlink_action_async(action_coro):
         except Exception:
             pass
 
-    # Ne jamais bloquer la requête HTTP : renvoie l'état même si erreur
     if result["ok"]:
         return {"status": "ok", "username": result.get("username")}
     else:
