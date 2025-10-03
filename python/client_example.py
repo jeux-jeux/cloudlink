@@ -1,5 +1,4 @@
 import os
-import requests
 import asyncio
 import threading
 import random
@@ -10,10 +9,7 @@ from cloudlink import client as cl_client
 app = Flask(__name__)
 
 # === CONFIGURATION FIXE ===
-# Ici, on n’utilise plus DISCOVERY_URL ni CLOUDLINK_KEY
 CLOUDLINK_URL = "wss://cloudlink-server.onrender.com/"
-
-
 
 # === Core: connect -> do action -> disconnect ===
 async def cloudlink_action_async(action_coro):
@@ -44,16 +40,14 @@ async def cloudlink_action_async(action_coro):
     async def _on_disconnect():
         finished.set()
 
-    # Lancement du client cloudlink
+    # Lancement du client cloudlink avec Origin pour passer Cloudflare
     thread = threading.Thread(
         target=lambda: client.run(
             host=CLOUDLINK_URL,
-            headers={"Origin": "tw-editor://."}  # 👈 indispensable pour passer Cloudflare
+            headers={"Origin": "tw-editor://."}  # 👈 obligé pour Cloudflare
         ),
         daemon=True
     )
-
-    thread = threading.Thread(target=lambda: client.run(host=CLOUDLINK_URL), daemon=True)
     thread.start()
 
     await finished.wait()
