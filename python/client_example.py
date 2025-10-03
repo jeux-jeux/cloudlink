@@ -146,6 +146,11 @@ def route_private_variable():
 
     return jsonify(cloudlink_action(action))
 
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Serveur en ligne ✅"
 # simple health
 @app.route("/_health", methods=["GET"])
 def health():
