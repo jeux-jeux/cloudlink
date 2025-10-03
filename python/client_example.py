@@ -32,7 +32,7 @@ async def cloudlink_action_async(action_coro):
             traceback.print_exc()
         finally:
             try:
-                client.disconnect()
+                await client.disconnect()
             except Exception:
                 pass
 
@@ -40,23 +40,23 @@ async def cloudlink_action_async(action_coro):
     async def _on_disconnect():
         finished.set()
 
-    # Lancement du client cloudlink avec Origin pour passer Cloudflare
-    thread = threading.Thread(
-        target=lambda: client.run(
+    # Lancement du client cloudlink avec asyncio et options WebSocket
+    async def start_client():
+        await client.connect(
             host=CLOUDLINK_URL,
-            headers={
-                "Origin": "tw-editor://.",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "KHTML, like Gecko) turbowarp-desktop/1.14.4 Chrome/136.0.7103.149 "
-                              "Electron/36.4.0 Safari/537.36"
+            websocket_options={
+                "extra_headers": {
+                    "Origin": "tw-editor://.",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                  "turbowarp-desktop/1.14.4 Chrome/136.0.7103.149 "
+                                  "Electron/36.4.0 Safari/537.36"
+                }
             }
-        ),
-        daemon=True
-    )
+        )
+        await finished.wait()
 
-    thread.start()
-
-    await finished.wait()
+    asyncio.run(start_client())
 
     if result["ok"]:
         return {"status": "ok", "username": result.get("username")}
