@@ -32,24 +32,21 @@ async def cloudlink_action_async(action_coro):
             traceback.print_exc()
         finally:
             try:
-                await client.disconnect()
+                client.disconnect()
             except Exception:
                 pass
-            finished.set()
 
-    # Lancement du client cloudlink dans le thread
-    def start_client():
-        client.run(
-            host=CLOUDLINK_URL,
-            headers={
-                "Origin": "tw-editor://.",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "KHTML, like Gecko) turbowarp-desktop/1.14.4 Chrome/136.0.7103.149 "
-                              "Electron/36.4.0 Safari/537.36"
-            }
-        )
+    @client.on_disconnect
+    async def _on_disconnect():
+        finished.set()
 
-    thread = threading.Thread(target=start_client, daemon=True)
+    # Lancement du client cloudlink sans headers
+    thread = threading.Thread(
+        target=lambda: client.run(
+            host=CLOUDLINK_URL
+        ),
+        daemon=True
+    )
     thread.start()
 
     await finished.wait()
@@ -59,16 +56,13 @@ async def cloudlink_action_async(action_coro):
     else:
         return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
 
-
 def cloudlink_action(action_coro):
+    # Si nous sommes déjà dans une boucle asyncio (Flask 2.x / Python 3.13)
     try:
         loop = asyncio.get_running_loop()
-        # Si une boucle est déjà en cours, créer une tâche
-        return asyncio.run_coroutine_threadsafe(cloudlink_action_async(action_coro), loop).result()
+        return loop.run_until_complete(cloudlink_action_async(action_coro))
     except RuntimeError:
-        # Sinon, exécuter normalement
         return asyncio.run(cloudlink_action_async(action_coro))
-
 
 # === ROUTES ===
 
@@ -78,13 +72,12 @@ def route_global_message():
     rooms = data.get("rooms")
     message = data.get("message")
     if not isinstance(rooms, list) or not message:
-        return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
+        return jsonify({"status":"error","message":"rooms (list) and message required"}), 400
 
     async def action(client, username):
         await client.protocol.send_gmsg(message, rooms=rooms)
 
     return jsonify(cloudlink_action(action))
-
 
 @app.route("/private-message", methods=["POST"])
 def route_private_message():
@@ -93,13 +86,12 @@ def route_private_message():
     room = data.get("room")
     message = data.get("message")
     if not username_target or not room or not message:
-        return jsonify({"status": "error", "message": "username, room and message required"}), 400
+        return jsonify({"status":"error","message":"username, room and message required"}), 400
 
     async def action(client, username):
         await client.protocol.send_pmsg(username_target, room, message)
 
     return jsonify(cloudlink_action(action))
-
 
 @app.route("/global-variable", methods=["POST"])
 def route_global_variable():
@@ -108,13 +100,12 @@ def route_global_variable():
     name = data.get("name")
     val = data.get("val")
     if not room or name is None:
-        return jsonify({"status": "error", "message": "room and name required"}), 400
+        return jsonify({"status":"error","message":"room and name required"}), 400
 
     async def action(client, username):
         await client.protocol.send_gvar(room, name, val)
 
     return jsonify(cloudlink_action(action))
-
 
 @app.route("/private-variable", methods=["POST"])
 def route_private_variable():
@@ -124,23 +115,20 @@ def route_private_variable():
     name = data.get("name")
     val = data.get("val")
     if not username_target or not room or name is None:
-        return jsonify({"status": "error", "message": "username, room and name required"}), 400
+        return jsonify({"status":"error","message":"username, room and name required"}), 400
 
     async def action(client, username):
         await client.protocol.send_pvar(username_target, room, name, val)
 
     return jsonify(cloudlink_action(action))
 
-
 @app.route("/")
 def home():
     return "Serveur Cloudlink-sender en ligne ✅"
 
-
 @app.route("/_health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
-
+    return jsonify({"status":"ok"})
 
 # === Launch ===
 if __name__ == "__main__":
