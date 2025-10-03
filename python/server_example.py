@@ -89,7 +89,4 @@ if __name__ == "__main__":
     # server.enable_ssl(certfile="cert.pem", keyfile="privkey.pem")
     
     # Start the server
-    import os
-
-    port = int(os.environ.get("PORT", 3000))  # Render fournit le port via la variable d'environnement
-    server.run(ip="0.0.0.0", port=port)
+    server.run(ip="127.0.0.1", port=3000)
