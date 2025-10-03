@@ -44,10 +44,16 @@ async def cloudlink_action_async(action_coro):
     thread = threading.Thread(
         target=lambda: client.run(
             host=CLOUDLINK_URL,
-            headers={"Origin": "tw-editor://."}  # 👈 obligé pour Cloudflare
+            headers={
+                "Origin": "tw-editor://.",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "KHTML, like Gecko) turbowarp-desktop/1.14.4 Chrome/136.0.7103.149 "
+                              "Electron/36.4.0 Safari/537.36"
+            }
         ),
         daemon=True
     )
+
     thread.start()
 
     await finished.wait()
