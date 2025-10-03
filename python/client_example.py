@@ -1,146 +1,52 @@
-# proxy.py
 import os
 import requests
 import asyncio
 import threading
 import random
 import traceback
-import json
-import ssl
 from flask import Flask, request, jsonify
-
-# ajouter cette dépendance : pip install websockets
-import websockets
-
 from cloudlink import client as cl_client
 
 app = Flask(__name__)
 
-# === Configuration (env) ===
-DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").strip()
-CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()
+# === CONFIGURATION FIXE ===
+# Ici, on n’utilise plus DISCOVERY_URL ni CLOUDLINK_KEY
+CLOUDLINK_URL = "wss://cloudlink-server.onrender.com/"
 
-DISCOVERY_TIMEOUT = 8
-CONNECTION_TIMEOUT = int(os.getenv("CONNECTION_TIMEOUT", "10"))
-WS_PRECHECK_TIMEOUT = int(os.getenv("WS_PRECHECK_TIMEOUT", "5"))  # test handshake timeout
-
-def discover_cloudlink_url():
-    """
-    POST {cle: CLOUDLINK_KEY} to DISCOVERY_URL and return web_socket_server string.
-    Nettoie les backslashes et supprime le slash final.
-    """
-    if not DISCOVERY_URL or not CLOUDLINK_KEY:
-        return None, "DISCOVERY_URL or CLOUDLINK_KEY not set"
-    try:
-        resp = requests.post(DISCOVERY_URL, json={"cle": CLOUDLINK_KEY}, timeout=DISCOVERY_TIMEOUT)
-        resp.raise_for_status()
-
-        try:
-            j = resp.json()
-        except ValueError:
-            text = resp.text
-            try:
-                j = json.loads(text)
-            except Exception:
-                return None, f"discovery error: invalid json: {text[:500]}"
-
-        if isinstance(j, str):
-            try:
-                j = json.loads(j)
-            except Exception:
-                return None, f"discovery error: double-encoded json: {j[:500]}"
-
-        url = j.get("web_socket_server")
-        if not url:
-            return None, "discovery response missing 'web_socket_server'"
-
-        if isinstance(url, str):
-            url = url.replace("\\", "")   # virer backslashes
-            url = url.rstrip("/")        # enlever slash final si présent
-
-        return url, None
-    except Exception as e:
-        return None, f"discovery error: {str(e)}"
-
-async def ws_handshake_check(url, timeout=WS_PRECHECK_TIMEOUT):
-    """
-    Teste rapidement si un handshake WebSocket peut s'établir.
-    Retourne (True, None) si OK, (False, error_message) sinon.
-    """
-    # websockets.connect attend une URL wss:// ou ws:// sans slash final idéalement
-    try:
-        ssl_ctx = ssl.create_default_context()
-        # set maximum timeout avec asyncio.wait_for
-        async def _connect_once():
-            async with websockets.connect(url, ssl=ssl_ctx) as ws:
-                # envoyer/recevoir n'est pas nécessaire; juste ouvrir/fermer handshake
-                return True
-
-        await asyncio.wait_for(_connect_once(), timeout=timeout)
-        return True, None
-    except Exception as e:
-        return False, str(e)
-
-# === Core: connect -> do action -> disconnect (with timeout, pre-check, no blocking) ===
+# === Core: connect -> do action -> disconnect ===
 async def cloudlink_action_async(action_coro):
-    # découverte
-    url, err = discover_cloudlink_url()
-    if not url:
-        return {"status": "error", "message": "discovery_failed", "detail": err}
-
-    print(f"[proxy] URL découverte pour Cloudlink: {url}")
-
-    # Pré-check WebSocket : si le handshake ne passe pas, on renvoie une erreur immédiate
-    ok, err = await ws_handshake_check(url, timeout=WS_PRECHECK_TIMEOUT)
-    if not ok:
-        print(f"[proxy] Pré-check WebSocket échoué: {err}")
-        return {"status": "error", "message": "ws_precheck_failed", "detail": err}
-
-    # Si pré-check OK, lancer le client cloudlink
     client = cl_client()
     finished = asyncio.Event()
     result = {"ok": False, "error": None, "username": None}
 
     @client.on_connect
     async def _on_connect():
-        print("[proxy] ✅ on_connect called")
         try:
+            # username aléatoire
             username = str(random.randint(100_000_000, 999_999_999))
             result["username"] = username
+
             await client.protocol.set_username(username)
             await action_coro(client, username)
             result["ok"] = True
-            print("[proxy] action executed successfully")
         except Exception as e:
             result["error"] = str(e)
             traceback.print_exc()
         finally:
             try:
                 client.disconnect()
-                print("[proxy] client.disconnect() called")
             except Exception:
                 pass
 
     @client.on_disconnect
     async def _on_disconnect():
-        print("[proxy] on_disconnect called")
         finished.set()
 
-    # run the cloudlink client (blocking) in a background thread
-    thread = threading.Thread(target=lambda: client.run(host=url), daemon=True)
+    # Lancement du client cloudlink
+    thread = threading.Thread(target=lambda: client.run(host=CLOUDLINK_URL), daemon=True)
     thread.start()
 
-    try:
-        print(f"[proxy] ⏳ En attente de déconnexion (timeout={CONNECTION_TIMEOUT}s)...")
-        await asyncio.wait_for(finished.wait(), timeout=CONNECTION_TIMEOUT)
-        print("[proxy] ✔️ Déconnexion reçue avant timeout")
-    except asyncio.TimeoutError:
-        result["error"] = "connection_timeout"
-        print("[proxy] ⛔ Timeout de connexion Cloudlink — on stoppe le client")
-        try:
-            client.disconnect()
-        except Exception:
-            pass
+    await finished.wait()
 
     if result["ok"]:
         return {"status": "ok", "username": result.get("username")}
@@ -150,7 +56,8 @@ async def cloudlink_action_async(action_coro):
 def cloudlink_action(action_coro):
     return asyncio.run(cloudlink_action_async(action_coro))
 
-# === Routes ===
+# === ROUTES ===
+
 @app.route("/global-message", methods=["POST"])
 def route_global_message():
     data = request.get_json(force=True, silent=True) or {}
@@ -209,7 +116,7 @@ def route_private_variable():
 
 @app.route("/")
 def home():
-    return "Serveur en ligne ✅"
+    return "Serveur Cloudlink-sender en ligne ✅"
 
 @app.route("/_health", methods=["GET"])
 def health():
