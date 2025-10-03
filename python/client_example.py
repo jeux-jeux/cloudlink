@@ -14,7 +14,26 @@ app = Flask(__name__)
 # REQUIRED:
 DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").strip()   # ex: https://example.com/get-server
 CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()   # cle secrète à envoyer à DISCOVERY_URL
+def discover_cloudlink_url():
+    if not DISCOVERY_URL or not CLOUDLINK_KEY:
+        return None, "DISCOVERY_URL or CLOUDLINK_KEY not set"
+    try:
+        resp = requests.post(DISCOVERY_URL, json={"cle": CLOUDLINK_KEY}, timeout=8)
+        resp.raise_for_status()
+        j = resp.json()
+        url = j.get("web_socket_server")
+        if not url:
+            return None, "discovery response missing 'web_socket_server'"
 
+        # ⚡ Nettoyage : supprimer tous les backslashes
+        url = url.replace("\\", "")
+
+        # ⚡ Normaliser le slash final (forcer exactement un seul)
+        url = url.rstrip("/") + "/"
+
+        return url, None
+    except Exception as e:
+        return None, f"discovery error: {str(e)}"
 # Optional: keep it empty — we generate a username each request
 # PROXY_USERNAME_FIXED = os.getenv("PROXY_USERNAME", "").strip()
 
