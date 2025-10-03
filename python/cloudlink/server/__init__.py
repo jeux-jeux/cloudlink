@@ -519,10 +519,40 @@ class server:
         # Add to clients manager
         self.clients_manager.add(client)
 
+        # -----------------------
+        # Origin check (added)
+        # -----------------------
+        # List of allowed origins. Add or remove as needed.
+        allowed_origins = {
+            "tw-editor://.",
+            "https://jeux-jeux.github.io",
+            "http://localhost:3000",
+            "https://example.com"
+        }
+        # Get origin from request headers if available
+        origin = None
+        try:
+            origin = None
+            if hasattr(client, "request_headers") and client.request_headers:
+                # websockets.WebSocketServerProtocol stores request_headers as a CIMultiDict-like mapping
+                origin = client.request_headers.get("Origin") or client.request_headers.get("origin")
+        except Exception:
+            origin = None
+
+        # If origin is not allowed, close connection immediately
+        # NOTE: change this logic if you want to allow all origins in some environments
+        if origin not in allowed_origins:
+            self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
+            try:
+                await client.close(code=4003, reason="Origin non autorisé")
+            except Exception:
+                pass
+            return
+
         # Fire on_connect events
         self.asyncio.create_task(self.execute_on_connect_events(client))
 
-        self.logger.debug(f"Client {client.snowflake} connected")
+        self.logger.debug(f"Client {client.snowflake} connected with Origin: {origin}")
 
         # Run connection loop
         await self.connection_loop(client)
@@ -540,7 +570,8 @@ class server:
             )
 
         self.logger.debug(
-            f"Client {client.snowflake} disconnected: Total lifespan of {time.monotonic() - client.birth_time} seconds.")
+            f"Client {client.snowflake} disconnected: Total lifespan of {time.monotonic() - client.birth_time} seconds."
+        )
 
     # Connection loop - Redefine for use with another outside library
     async def connection_loop(self, client):
