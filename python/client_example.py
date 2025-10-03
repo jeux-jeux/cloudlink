@@ -12,11 +12,9 @@ from cloudlink import client as cl_client
 app = Flask(__name__)
 
 # === Configuration (env) ===
-# REQUIRED:
-DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").strip()   # ex: https://example.com/get-server
-CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()   # cle secrète à envoyer à DISCOVERY_URL
+DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").strip()
+CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()
 
-# Timeout pour la découverte et pour la connexion Cloudlink (en secondes)
 DISCOVERY_TIMEOUT = 8
 CONNECTION_TIMEOUT = int(os.getenv("CONNECTION_TIMEOUT", "10"))
 
@@ -31,18 +29,15 @@ def discover_cloudlink_url():
         resp = requests.post(DISCOVERY_URL, json={"cle": CLOUDLINK_KEY}, timeout=DISCOVERY_TIMEOUT)
         resp.raise_for_status()
 
-        # essayer de parser le JSON
         try:
             j = resp.json()
         except ValueError:
-            # si le serveur a renvoyé un JSON double-encodé (ou texte), tenter un second parse
             text = resp.text
             try:
                 j = json.loads(text)
             except Exception:
                 return None, f"discovery error: invalid json: {text[:500]}"
 
-        # Si la réponse est une string JSON encodée, parser à nouveau
         if isinstance(j, str):
             try:
                 j = json.loads(j)
@@ -53,7 +48,6 @@ def discover_cloudlink_url():
         if not url:
             return None, "discovery response missing 'web_socket_server'"
 
-        # Nettoyage : supprimer tous les backslashes (éventuels) et forcer PAS de slash final
         if isinstance(url, str):
             url = url.replace("\\", "")
             url = url.rstrip("/")
@@ -62,13 +56,8 @@ def discover_cloudlink_url():
     except Exception as e:
         return None, f"discovery error: {str(e)}"
 
-# === Core: connect -> do action -> disconnect (with a connection timeout) ===
+# === Core: connect -> do action -> disconnect (with timeout, no blocking) ===
 async def cloudlink_action_async(action_coro):
-    """
-    action_coro: async function(client, username)
-    Waits until disconnect occurs or until CONNECTION_TIMEOUT seconds
-    Returns dict with status and username (and error detail on failure).
-    """
     url, err = discover_cloudlink_url()
     if not url:
         return {"status": "error", "message": "discovery_failed", "detail": err}
@@ -83,12 +72,9 @@ async def cloudlink_action_async(action_coro):
     async def _on_connect():
         print("[proxy] ✅ on_connect called")
         try:
-            # generate random 9-digit username for this session
             username = str(random.randint(100_000_000, 999_999_999))
             result["username"] = username
-
             await client.protocol.set_username(username)
-            # perform user action (send gmsg / pmsg / gvar / pvar)
             await action_coro(client, username)
             result["ok"] = True
             print("[proxy] action executed successfully")
@@ -107,24 +93,22 @@ async def cloudlink_action_async(action_coro):
         print("[proxy] on_disconnect called")
         finished.set()
 
-    # run the cloudlink client (blocking) in a background thread
     thread = threading.Thread(target=lambda: client.run(host=url), daemon=True)
     thread.start()
 
-    # WAIT for disconnect but with timeout to avoid hanging requests forever
     try:
         print(f"[proxy] ⏳ En attente de déconnexion (timeout={CONNECTION_TIMEOUT}s)...")
         await asyncio.wait_for(finished.wait(), timeout=CONNECTION_TIMEOUT)
         print("[proxy] ✔️ Déconnexion reçue avant timeout")
     except asyncio.TimeoutError:
-        # Timeout : on considère que la connexion n'a pas été établie correctement
         result["error"] = "connection_timeout"
-        print("[proxy] ⛔ Timeout de connexion Cloudlink — on restart/stoppe le client")
+        print("[proxy] ⛔ Timeout de connexion Cloudlink — on stoppe le client")
         try:
             client.disconnect()
         except Exception:
             pass
 
+    # Ne jamais bloquer la requête HTTP : renvoie l'état même si erreur
     if result["ok"]:
         return {"status": "ok", "username": result.get("username")}
     else:
@@ -134,7 +118,6 @@ def cloudlink_action(action_coro):
     return asyncio.run(cloudlink_action_async(action_coro))
 
 # === Routes ===
-
 @app.route("/global-message", methods=["POST"])
 def route_global_message():
     data = request.get_json(force=True, silent=True) or {}
@@ -195,7 +178,6 @@ def route_private_variable():
 def home():
     return "Serveur en ligne ✅"
 
-# simple health
 @app.route("/_health", methods=["GET"])
 def health():
     return jsonify({"status":"ok"})
