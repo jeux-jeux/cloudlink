@@ -5,7 +5,6 @@ import threading
 import random
 import traceback
 import functools
-import time
 from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
 import websockets
@@ -16,7 +15,7 @@ app = Flask(__name__)
 # URL du serveur CloudLink
 CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "wss://cloudlink-server.onrender.com/")
 
-# En-têtes WebSocket (comme TurboWarp)
+# En-têtes WebSocket (TurboWarp)
 WS_EXTRA_HEADERS = [
     ("Origin", "tw-editor://."),
     ("User-Agent", "turbowarp-desktop/1.14.4")
@@ -67,68 +66,44 @@ def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
         loop.close()
 
 # -------------------------
-# CloudLink client runner
+# CloudLink runner (thread-safe)
 # -------------------------
-async def cloudlink_action_async(action_coro, ws_url):
-    client = cl_client()
-    finished = asyncio.Event()
-    result = {"ok": False, "error": None, "username": None}
+def run_cloudlink_action(action_coro):
+    """Exécute un client CloudLink dans un thread et déconnecte automatiquement après l'action."""
+    def _worker():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        client = cl_client()
 
-    @client.on_connect
-    async def _on_connect():
+        async def main():
+            try:
+                username = str(random.randint(100_000_000, 999_999_999))
+                await client.protocol.set_username(username)
+                await action_coro(client, username)
+            except Exception as e:
+                print("Error in cloudlink action:", e)
+                traceback.print_exc()
+            finally:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
         try:
-            username = str(random.randint(100_000_000, 999_999_999))
-            result["username"] = username
-            client.protocol.set_username(username)
-            action_coro(client, username)
-            result["ok"] = True
-        except Exception as e:
-            result["error"] = str(e)
-            traceback.print_exc()
+            loop.run_until_complete(main())
         finally:
             try:
-                client.disconnect()
+                loop.close()
             except Exception:
                 pass
 
-    @client.on_disconnect
-    async def _on_disconnect():
-        finished.set()
-
-    def run_client():
-        try:
-            try:
-                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
-            except Exception as e:
-                print("Warning: failed to monkeypatch client.ws.connect ->", e)
-            client.run(host=ws_url)
-        except Exception as e:
-            result["error"] = str(e)
-            traceback.print_exc()
-            finished.set()
-
-    thread = threading.Thread(target=run_client, daemon=True)
+    thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
-
-    await finished.wait()
-    if result["ok"]:
-        return {"status": "ok", "username": result.get("username")}
-    else:
-        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
-
-
-def cloudlink_action(action_coro):
-    raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
-    ws_url = sanitize_ws_url(raw)
-    try:
-        return asyncio.run(cloudlink_action_async(action_coro, ws_url))
-    except Exception as e:
-        return {"status": "error", "message": "internal_error", "detail": str(e)}
+    return {"status": "queued"}
 
 # -------------------------
 # HTTP routes
 # -------------------------
-
 @app.route("/global-message", methods=["POST"])
 def global_message():
     data = request.get_json(force=True, silent=True) or {}
@@ -138,9 +113,9 @@ def global_message():
         return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
 
     async def action(client, username):
-        client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
+        await client.protocol.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
 
-    return jsonify(cloudlink_action(action))
+    return jsonify(run_cloudlink_action(action))
 
 
 @app.route("/private-message", methods=["POST"])
@@ -153,9 +128,9 @@ def private_message():
         return jsonify({"status": "error", "message": "username, room and message required"}), 400
 
     async def action(client, username):
-        client.send_packet({"cmd": "pmsg", "val": message, "uid": username_target, "room": room})
+        await client.protocol.send_packet({"cmd": "pmsg", "val": message, "uid": username_target, "room": room})
 
-    return jsonify(cloudlink_action(action))
+    return jsonify(run_cloudlink_action(action))
 
 
 @app.route("/global-variable", methods=["POST"])
@@ -168,9 +143,9 @@ def global_variable():
         return jsonify({"status": "error", "message": "room and name required"}), 400
 
     async def action(client, username):
-        client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
+        await client.protocol.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
 
-    return jsonify(cloudlink_action(action))
+    return jsonify(run_cloudlink_action(action))
 
 
 @app.route("/private-variable", methods=["POST"])
@@ -184,11 +159,13 @@ def private_variable():
         return jsonify({"status": "error", "message": "username, room and name required"}), 400
 
     async def action(client, username):
-        client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "uid": username_target})
+        await client.protocol.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "uid": username_target})
 
-    return jsonify(cloudlink_action(action))
+    return jsonify(run_cloudlink_action(action))
 
-
+# -------------------------
+# Health & home
+# -------------------------
 @app.route("/_health")
 def health():
     return jsonify({"status": "ok"})
@@ -218,44 +195,38 @@ def debug_connect_client():
     raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
     ws_url = sanitize_ws_url(raw)
     timeout = int(request.args.get("timeout", "8"))
-
     result = {"ok": False, "error": None, "trace": None}
 
-    def run_client_and_capture():
+    def _worker():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         client = cl_client()
-        finished_flag = threading.Event()
 
-        @client.on_connect
-        async def _on_connect():
+        async def main():
             try:
                 username = str(random.randint(100_000_000, 999_999_999))
-                client.protocol.set_username(username)
+                await client.protocol.set_username(username)
                 result["ok"] = True
             except Exception as e:
                 result["error"] = str(e)
-                traceback.print_exc()
+                result["trace"] = traceback.format_exc()
             finally:
                 try:
-                    client.disconnect()
+                    await client.disconnect()
                 except Exception:
                     pass
 
-        @client.on_disconnect
-        async def _on_disconnect():
-            finished_flag.set()
-
         try:
-            client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
-            client.run(host=ws_url)
-        except Exception as e:
-            result["error"] = str(e)
-            result["trace"] = traceback.format_exc()
-            finished_flag.set()
+            loop.run_until_complete(main())
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
 
-    thread = threading.Thread(target=run_client_and_capture, daemon=True)
+    thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
     thread.join(timeout=timeout)
-
     if thread.is_alive():
         return jsonify({"status": "timeout", "detail": f"Client still alive after {timeout}s", "result": result})
     else:
