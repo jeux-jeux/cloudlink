@@ -1,4 +1,4 @@
-# proxy.py
+# proxy_http.py
 import os
 import asyncio
 import threading
@@ -8,11 +8,9 @@ from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
 
 app = Flask(__name__)
+CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "ws://127.0.0.1:3000/")  # Connexion au serveur CloudLink
 
-# URL WebSocket du serveur CloudLink
-CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "ws://127.0.0.1:3000/")
-
-# === Core: connect -> action -> disconnect ===
+# --- Core CloudLink ---
 async def cloudlink_action_async(action_coro, ws_url):
     client = cl_client()
     finished = asyncio.Event()
@@ -39,7 +37,6 @@ async def cloudlink_action_async(action_coro, ws_url):
     async def _on_disconnect():
         finished.set()
 
-    # Exécuter le client CloudLink dans un thread séparé
     def run_client():
         try:
             client.run(host=ws_url)
@@ -49,17 +46,15 @@ async def cloudlink_action_async(action_coro, ws_url):
 
     thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
-
     await finished.wait()
     return result if result["ok"] else {"status": "error", "username": result.get("username"), "detail": result.get("error")}
 
 def cloudlink_action(action_coro):
-    """Wrapper Flask-friendly pour exécuter une action CloudLink."""
     return asyncio.run(cloudlink_action_async(action_coro, CLOUDLINK_WS_URL))
 
-# === Routes ===
+# --- Routes ---
 @app.route("/global-message", methods=["POST"])
-def route_global_message():
+def global_message():
     data = request.get_json(force=True, silent=True) or {}
     rooms = data.get("rooms")
     message = data.get("message")
@@ -72,7 +67,7 @@ def route_global_message():
     return jsonify(cloudlink_action(action))
 
 @app.route("/private-message", methods=["POST"])
-def route_private_message():
+def private_message():
     data = request.get_json(force=True, silent=True) or {}
     username_target = data.get("username")
     room = data.get("room")
@@ -86,7 +81,7 @@ def route_private_message():
     return jsonify(cloudlink_action(action))
 
 @app.route("/global-variable", methods=["POST"])
-def route_global_variable():
+def global_variable():
     data = request.get_json(force=True, silent=True) or {}
     room = data.get("room")
     name = data.get("name")
@@ -100,7 +95,7 @@ def route_global_variable():
     return jsonify(cloudlink_action(action))
 
 @app.route("/private-variable", methods=["POST"])
-def route_private_variable():
+def private_variable():
     data = request.get_json(force=True, silent=True) or {}
     username_target = data.get("username")
     room = data.get("room")
@@ -114,15 +109,15 @@ def route_private_variable():
 
     return jsonify(cloudlink_action(action))
 
-@app.route("/_health", methods=["GET"])
+@app.route("/_health")
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status":"ok"})
 
 @app.route("/")
 def home():
-    return "Serveur en ligne ✅"
+    return "Serveur HTTP en ligne ✅"
 
-# === Launch ===
+# --- Lancement ---
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
