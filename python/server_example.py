@@ -91,7 +91,7 @@ if __name__ == "__main__":
     # srv.enable_ssl(certfile="cert.pem", keyfile="privkey.pem")
     
     # Determine host/port for Render compatibility
-    host = "0.0.0.0"
+    host = "127.0.0.1"
     port_env = os.getenv("PORT")
     try:
         port = int(port_env) if port_env else 3000
