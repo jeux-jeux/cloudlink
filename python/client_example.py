@@ -1,4 +1,5 @@
 # proxy.py
+import os
 import asyncio
 import threading
 import random
