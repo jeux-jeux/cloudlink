@@ -79,15 +79,15 @@ async def cloudlink_action_async(action_coro, ws_url):
         try:
             username = str(random.randint(100_000_000, 999_999_999))
             result["username"] = username
-            await client.protocol.set_username(username)
-            await action_coro(client, username)
+            client.protocol.set_username(username)
+            action_coro(client, username)
             result["ok"] = True
         except Exception as e:
             result["error"] = str(e)
             traceback.print_exc()
         finally:
             try:
-                await client.disconnect()
+                client.disconnect()
             except Exception:
                 pass
 
@@ -138,7 +138,7 @@ def global_message():
         return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
 
     async def action(client, username):
-        await client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
+        client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
 
     return jsonify(cloudlink_action(action))
 
@@ -153,7 +153,7 @@ def private_message():
         return jsonify({"status": "error", "message": "username, room and message required"}), 400
 
     async def action(client, username):
-        await client.send_packet({"cmd": "pmsg", "val": message, "uid": username_target, "room": room})
+        client.send_packet({"cmd": "pmsg", "val": message, "uid": username_target, "room": room})
 
     return jsonify(cloudlink_action(action))
 
@@ -168,7 +168,7 @@ def global_variable():
         return jsonify({"status": "error", "message": "room and name required"}), 400
 
     async def action(client, username):
-        await client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
+        client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
 
     return jsonify(cloudlink_action(action))
 
@@ -184,7 +184,7 @@ def private_variable():
         return jsonify({"status": "error", "message": "username, room and name required"}), 400
 
     async def action(client, username):
-        await client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "uid": username_target})
+        client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "uid": username_target})
 
     return jsonify(cloudlink_action(action))
 
@@ -229,14 +229,14 @@ def debug_connect_client():
         async def _on_connect():
             try:
                 username = str(random.randint(100_000_000, 999_999_999))
-                await client.protocol.set_username(username)
+                client.protocol.set_username(username)
                 result["ok"] = True
             except Exception as e:
                 result["error"] = str(e)
                 traceback.print_exc()
             finally:
                 try:
-                    await client.disconnect()
+                    client.disconnect()
                 except Exception:
                     pass
 
