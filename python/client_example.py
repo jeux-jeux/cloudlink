@@ -25,28 +25,41 @@ WS_EXTRA_HEADERS = [
 # -------------------------
 # Helpers
 # -------------------------
+# import au sommet du fichier si nécessaire
+from urllib.parse import urlsplit
+
 def sanitize_ws_url(url: str) -> str:
-    """Nettoie et normalise l'URL WebSocket renvoyée par discovery."""
+    """
+    Nettoyage robuste de l'URL WebSocket :
+     - supprime backslashes et espaces
+     - convertit http(s) -> ws(s)
+     - si aucun scheme présent, ajoute wss:// par défaut
+     - garantit exactement UN slash final
+    """
     if not url:
         return url
+
+    # clean stray backslashes/spaces
     url = url.replace("\\", "").strip()
-    # Fix scheme if someone returned https:// or http://
+
+    # convert common http schemes to ws schemes
     if url.startswith("https://"):
         url = "wss://" + url[len("https://"):]
     elif url.startswith("http://"):
         url = "ws://" + url[len("http://"):]
-    # If no scheme, assume wss for common hosts
-    if not (url.startswith("ws://") or url.startswith("wss://")):
-        if "onrender" in url or "cloudlink" in url:
-            url = "wss://" + url.lstrip("/")
-        else:
-            url = "wss://" + url.lstrip("/")
-    # Normalize double slashes (avoid breaking "wss://")
-    url = url.replace(":/", "://")
-    # Ensure trailing slash (consistent)
-    if not url.endswith("/"):
-        url += "/"
+    # if it already starts with ws:// or wss://, keep as is
+
+    # if no scheme (hostname-only or leading slash), add wss:// by default
+    parts = urlsplit(url)
+    if not parts.scheme:
+        # remove leading slashes if present, then prefix
+        url = "wss://" + url.lstrip("/")
+
+    # ensure there is exactly one trailing slash
+    url = url.rstrip("/") + "/"
+
     return url
+
 
 
 def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
