@@ -1,81 +1,17 @@
 # proxy.py
-import os
-import requests
 import asyncio
 import threading
 import random
 import traceback
 from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
-import websockets
-from websockets.exceptions import InvalidStatusCode, InvalidHandshake
 
 app = Flask(__name__)
 
-# === Configuration (env) ===
-DISCOVERY_URL = os.getenv("DISCOVERY_URL", "").strip()   # ex: https://example.com/get-server
-CLOUDLINK_KEY = os.getenv("CLOUDLINK_KEY", "").strip()   # cle secrète à envoyer à DISCOVERY_URL
+# URL WebSocket local du serveur CloudLink
+CLOUDLINK_WS_URL = "ws://127.0.0.1:3000/"  # correspond au server.py sur 0.0.0.0:3000
 
-# Fallback interne pour Render (évite le 502)
-FALLBACK_CLOUDLINK = os.getenv("FALLBACK_CLOUDLINK", "").strip() or "ws://127.0.0.1:3000/"
-
-# === Helpers ===
-def sanitize_ws_url(url: str) -> str:
-    if not url:
-        return url
-    url = url.replace("\\", "").strip()
-    if not (url.startswith("ws://") or url.startswith("wss://")):
-        url = "ws://" + url.lstrip("/")
-    url = url.rstrip("/") + "/"
-    return url
-
-def discover_cloudlink_url():
-    if not DISCOVERY_URL or not CLOUDLINK_KEY:
-        return sanitize_ws_url(FALLBACK_CLOUDLINK), None
-
-    try:
-        resp = requests.post(DISCOVERY_URL, json={"cle": CLOUDLINK_KEY}, timeout=6)
-        resp.raise_for_status()
-        j = resp.json()
-        url = j.get("web_socket_server") or j.get("websocket") or j.get("url") or ""
-        if not url:
-            return sanitize_ws_url(FALLBACK_CLOUDLINK), "discovery response missing 'web_socket_server'"
-        return sanitize_ws_url(url), None
-    except Exception as e:
-        return sanitize_ws_url(FALLBACK_CLOUDLINK), f"discovery error: {str(e)}"
-
-def ws_handshake_test(url: str, extra_headers=None, timeout=6):
-    async def _attempt():
-        res = {"ok": False, "error": None, "exc_type": None, "status_code": None, "response_headers": None}
-        try:
-            async with websockets.connect(url, extra_headers=extra_headers, open_timeout=timeout) as ws:
-                res["ok"] = True
-                return res
-        except InvalidStatusCode as e:
-            res["exc_type"] = "InvalidStatusCode"
-            res["error"] = str(e)
-            res["status_code"] = getattr(e, "status_code", None)
-            headers = getattr(e, "response_headers", None) or getattr(e, "headers", None)
-            res["response_headers"] = dict(headers) if headers else None
-            return res
-        except InvalidHandshake as e:
-            res["exc_type"] = "InvalidHandshake"
-            res["error"] = str(e)
-            return res
-        except Exception as e:
-            res["exc_type"] = type(e).__name__
-            res["error"] = str(e)
-            return res
-
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(_attempt())
-    finally:
-        try: loop.close()
-        except Exception: pass
-
-# === Core CloudLink action ===
+# === Core: connect -> action -> disconnect ===
 async def cloudlink_action_async(action_coro, ws_url):
     client = cl_client()
     finished = asyncio.Event()
@@ -93,8 +29,10 @@ async def cloudlink_action_async(action_coro, ws_url):
             result["error"] = str(e)
             traceback.print_exc()
         finally:
-            try: await client.disconnect()
-            except Exception: pass
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
     @client.on_disconnect
     async def _on_disconnect():
@@ -109,6 +47,7 @@ async def cloudlink_action_async(action_coro, ws_url):
 
     thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
+
     await finished.wait()
     if result["ok"]:
         return {"status": "ok", "username": result.get("username")}
@@ -116,30 +55,9 @@ async def cloudlink_action_async(action_coro, ws_url):
         return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
 
 def cloudlink_action(action_coro):
-    url, err = discover_cloudlink_url()
-    if not url:
-        return {"status":"error","message":"discovery_failed","detail":err}
-
-    # Handshake test sans headers (plus fiable sur Render)
-    diag = ws_handshake_test(url, extra_headers=None, timeout=6)
-    if not diag.get("ok"):
-        return {"status":"error","message":"ws_handshake_failed","detail":diag}
-
-    try:
-        return asyncio.run(cloudlink_action_async(action_coro, url))
-    except Exception as e:
-        return {"status":"error","message":"internal_error","detail":str(e)}
+    return asyncio.run(cloudlink_action_async(action_coro, CLOUDLINK_WS_URL))
 
 # === Routes ===
-@app.route("/debug-check", methods=["GET"])
-def debug_check():
-    url, err = discover_cloudlink_url()
-    out = {"discovery_url": DISCOVERY_URL, "ok": bool(url), "ws_url": url or None, "detail": err}
-    out["tests"] = {
-        "default": ws_handshake_test(url, extra_headers=None) if url else None
-    }
-    return jsonify(out)
-
 @app.route("/global-message", methods=["POST"])
 def route_global_message():
     data = request.get_json(force=True, silent=True) or {}
@@ -150,6 +68,7 @@ def route_global_message():
 
     async def action(client, username):
         await client.protocol.send_gmsg(message, rooms=rooms)
+
     return jsonify(cloudlink_action(action))
 
 @app.route("/private-message", methods=["POST"])
@@ -163,6 +82,7 @@ def route_private_message():
 
     async def action(client, username):
         await client.protocol.send_pmsg(username_target, room, message)
+
     return jsonify(cloudlink_action(action))
 
 @app.route("/global-variable", methods=["POST"])
@@ -176,6 +96,7 @@ def route_global_variable():
 
     async def action(client, username):
         await client.protocol.send_gvar(room, name, val)
+
     return jsonify(cloudlink_action(action))
 
 @app.route("/private-variable", methods=["POST"])
@@ -190,15 +111,16 @@ def route_private_variable():
 
     async def action(client, username):
         await client.protocol.send_pvar(username_target, room, name, val)
-    return jsonify(cloudlink_action(action))
 
-@app.route("/")
-def home():
-    return "Serveur en ligne ✅"
+    return jsonify(cloudlink_action(action))
 
 @app.route("/_health", methods=["GET"])
 def health():
     return jsonify({"status":"ok"})
+
+@app.route("/")
+def home():
+    return "Serveur en ligne ✅"
 
 # === Launch ===
 if __name__ == "__main__":
