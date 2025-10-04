@@ -1,27 +1,95 @@
-# proxy_http.py (corrigé)
+# proxy_http.py
 import os
 import asyncio
 import threading
 import random
 import traceback
-from functools import partial
+import functools
+import time
 from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
-
-# --- NEW imports pour le monkeypatch ---
 import websockets
 
 app = Flask(__name__)
-CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "wss://cloudlink-server.onrender.com/")  # Connexion au serveur CloudLink
 
-# --- Headers à injecter dans le handshake (TurboWarp-like) ---
+# URL du serveur CloudLink (doit être wss:// si CloudLink public via HTTPS)
+CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "wss://cloudlink-server.onrender.com/")
+
+# Headers à injecter (TurboWarp-like). Tu peux modifier/ajouter si nécessaire.
 WS_EXTRA_HEADERS = [
-    ("Origin", "tw-editor://."),  # souvent demandé par TurboWarp / Cloudlink front
+    ("Origin", "tw-editor://."),
     ("User-Agent", "turbowarp-desktop/1.14.4")
 ]
 
-# --- Core CloudLink ---
+
+# -------------------------
+# Helpers
+# -------------------------
+def sanitize_ws_url(url: str) -> str:
+    """Nettoie et normalise l'URL WebSocket renvoyée par discovery."""
+    if not url:
+        return url
+    url = url.replace("\\", "").strip()
+    # Fix scheme if someone returned https:// or http://
+    if url.startswith("https://"):
+        url = "wss://" + url[len("https://"):]
+    elif url.startswith("http://"):
+        url = "ws://" + url[len("http://"):]
+    # If no scheme, assume wss for common hosts
+    if not (url.startswith("ws://") or url.startswith("wss://")):
+        if "onrender" in url or "cloudlink" in url:
+            url = "wss://" + url.lstrip("/")
+        else:
+            url = "wss://" + url.lstrip("/")
+    # Normalize double slashes (avoid breaking "wss://")
+    url = url.replace(":/", "://")
+    # Ensure trailing slash (consistent)
+    if not url.endswith("/"):
+        url += "/"
+    return url
+
+
+def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
+    """
+    Effectue un test de handshake websocket en créant une boucle dédiée.
+    Retourne un dict contenant ok, exc (repr), status_code, response_headers.
+    """
+    async def _attempt():
+        out = {"ok": False, "exc": None, "status_code": None, "response_headers": None}
+        try:
+            async with websockets.connect(url, extra_headers=extra_headers, open_timeout=timeout) as ws:
+                out["ok"] = True
+                return out
+        except Exception as e:
+            out["exc"] = repr(e)
+            out["status_code"] = getattr(e, "status_code", None)
+            headers = getattr(e, "response_headers", None) or getattr(e, "headers", None)
+            try:
+                out["response_headers"] = dict(headers) if headers else None
+            except Exception:
+                out["response_headers"] = str(headers)
+            return out
+
+    # Use a fresh event loop so we don't collide with Flask's runtime
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_attempt())
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+
+
+# -------------------------
+# CloudLink client runner (used by routes)
+# -------------------------
 async def cloudlink_action_async(action_coro, ws_url):
+    """
+    Create a cloudlink client, connect to ws_url, run action_coro, disconnect.
+    This function is intended to be executed inside asyncio.run(...) from a sync context.
+    """
     client = cl_client()
     finished = asyncio.Event()
     result = {"ok": False, "error": None, "username": None}
@@ -49,29 +117,52 @@ async def cloudlink_action_async(action_coro, ws_url):
 
     def run_client():
         try:
-            # === MONKEYPATCH ICI ===
-            # La librairie client utilise internement `self.ws.connect`.
-            # On le remplace par websockets.connect avec extra_headers.
+            # Monkeypatch websockets.connect used by the client to include headers
             try:
-                client.ws.connect = partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
             except Exception as e:
-                # Si ça échoue, on log mais on continue (le handshake peut encore fonctionner sans headers)
-                print("Warning: failed to monkeypatch websockets.connect ->", e)
+                # warn but continue (sometimes client.ws may be different depending on version)
+                print("Warning: failed to monkeypatch client.ws.connect ->", e)
 
             client.run(host=ws_url)
         except Exception as e:
             result["error"] = str(e)
             traceback.print_exc()
+            # ensure finished gets set so the outer coroutine won't wait forever
+            try:
+                # if we're inside an asyncio context, schedule finished.set(); else set directly
+                finished.set()
+            except Exception:
+                pass
 
     thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
+
+    # Wait until disconnect (or error sets finished)
     await finished.wait()
-    return result if result["ok"] else {"status": "error", "username": result.get("username"), "detail": result.get("error")}
+    if result["ok"]:
+        return {"status": "ok", "username": result.get("username")}
+    else:
+        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
+
 
 def cloudlink_action(action_coro):
-    return asyncio.run(cloudlink_action_async(action_coro, CLOUDLINK_WS_URL))
+    """
+    Wrapper used by Flask routes to synchronously run an async cloudlink action.
+    It discovers/sanitizes URL from environment and runs the async flow.
+    """
+    raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
+    ws_url = sanitize_ws_url(raw)
+    try:
+        return asyncio.run(cloudlink_action_async(action_coro, ws_url))
+    except Exception as e:
+        # If asyncio.run fails (rare), return the error
+        return {"status": "error", "message": "internal_error", "detail": str(e)}
 
-# --- Routes ---
+
+# -------------------------
+# HTTP routes (existing)
+# -------------------------
 @app.route("/global-message", methods=["POST"])
 def global_message():
     data = request.get_json(force=True, silent=True) or {}
@@ -84,6 +175,7 @@ def global_message():
         await client.protocol.send_gmsg(message, rooms=rooms)
 
     return jsonify(cloudlink_action(action))
+
 
 @app.route("/private-message", methods=["POST"])
 def private_message():
@@ -99,6 +191,7 @@ def private_message():
 
     return jsonify(cloudlink_action(action))
 
+
 @app.route("/global-variable", methods=["POST"])
 def global_variable():
     data = request.get_json(force=True, silent=True) or {}
@@ -112,6 +205,7 @@ def global_variable():
         await client.protocol.send_gvar(room, name, val)
 
     return jsonify(cloudlink_action(action))
+
 
 @app.route("/private-variable", methods=["POST"])
 def private_variable():
@@ -128,15 +222,109 @@ def private_variable():
 
     return jsonify(cloudlink_action(action))
 
+
 @app.route("/_health")
 def health():
-    return jsonify({"status":"ok"})
+    return jsonify({"status": "ok"})
+
 
 @app.route("/")
 def home():
     return "Serveur HTTP en ligne ✅"
 
-# --- Lancement ---
+
+# -------------------------
+# Diagnostic endpoints (NEW)
+# -------------------------
+@app.route("/debug-handshake", methods=["GET"])
+def debug_handshake():
+    """
+    Effectue trois tests de handshake depuis le même container que le proxy :
+      - default (no extra headers)
+      - origin only
+      - origin + user-agent
+    Retourne le résultat JSON complet.
+    """
+    raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
+    url = sanitize_ws_url(raw)
+
+    tests = {
+        "default": ws_handshake_test_sync(url, extra_headers=None),
+        "origin": ws_handshake_test_sync(url, extra_headers=[("Origin", "tw-editor://.")]),
+        "origin+ua": ws_handshake_test_sync(url, extra_headers=[("Origin", "tw-editor://."), ("User-Agent", "turbowarp-desktop/1.14.4")])
+    }
+
+    return jsonify({"ws_url": url, "tests": tests})
+
+
+@app.route("/debug-connect-client", methods=["POST"])
+def debug_connect_client():
+    """
+    Tente réellement de lancer un cl_client() vers CLOUDLINK_WS_URL en appliquant le monkeypatch
+    pour inclure WS_EXTRA_HEADERS. Attend le résultat (timeout configurable via ?timeout=).
+    Retourne le dict de résultat (ok/error/detail).
+    Exemple: POST /debug-connect-client  (optionnel JSON body ignored)
+    """
+    raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
+    ws_url = sanitize_ws_url(raw)
+    timeout = int(request.args.get("timeout", "8"))
+
+    # shared result container
+    result = {"ok": False, "error": None, "trace": None}
+
+    def run_client_and_capture():
+        client = cl_client()
+        finished_flag = threading.Event()
+
+        @client.on_connect
+        async def _on_connect():
+            try:
+                # Set username then disconnect quickly; this tests the handshake & successful connect.
+                username = str(random.randint(100_000_000, 999_999_999))
+                await client.protocol.set_username(username)
+                result["ok"] = True
+            except Exception as e:
+                result["error"] = str(e)
+                traceback.print_exc()
+            finally:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+        @client.on_disconnect
+        async def _on_disconnect():
+            finished_flag.set()
+
+        try:
+            # monkeypatch connect to include headers
+            try:
+                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+            except Exception as e:
+                # best-effort; continue even if monkeypatch not possible
+                print("Warning: monkeypatch failed in debug_connect_client:", e)
+
+            client.run(host=ws_url)  # blocking call inside this thread
+        except Exception as e:
+            result["error"] = str(e)
+            result["trace"] = traceback.format_exc()
+            finished_flag.set()
+
+    thread = threading.Thread(target=run_client_and_capture, daemon=True)
+    thread.start()
+
+    # Wait for completion or timeout
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        # still alive -> probably timeout connecting
+        return jsonify({"status": "timeout", "detail": f"Client thread alive after {timeout}s; check logs for more details", "result": result})
+    else:
+        return jsonify({"status": "finished", "result": result})
+
+
+# -------------------------
+# Run
+# -------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
