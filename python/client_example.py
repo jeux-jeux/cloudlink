@@ -1,14 +1,24 @@
-# proxy_http.py
+# proxy_http.py (corrigé)
 import os
 import asyncio
 import threading
 import random
 import traceback
+from functools import partial
 from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
 
+# --- NEW imports pour le monkeypatch ---
+import websockets
+
 app = Flask(__name__)
 CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "wss://cloudlink-server.onrender.com/")  # Connexion au serveur CloudLink
+
+# --- Headers à injecter dans le handshake (TurboWarp-like) ---
+WS_EXTRA_HEADERS = [
+    ("Origin", "tw-editor://."),  # souvent demandé par TurboWarp / Cloudlink front
+    ("User-Agent", "turbowarp-desktop/1.14.4")
+]
 
 # --- Core CloudLink ---
 async def cloudlink_action_async(action_coro, ws_url):
@@ -39,6 +49,15 @@ async def cloudlink_action_async(action_coro, ws_url):
 
     def run_client():
         try:
+            # === MONKEYPATCH ICI ===
+            # La librairie client utilise internement `self.ws.connect`.
+            # On le remplace par websockets.connect avec extra_headers.
+            try:
+                client.ws.connect = partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+            except Exception as e:
+                # Si ça échoue, on log mais on continue (le handshake peut encore fonctionner sans headers)
+                print("Warning: failed to monkeypatch websockets.connect ->", e)
+
             client.run(host=ws_url)
         except Exception as e:
             result["error"] = str(e)
