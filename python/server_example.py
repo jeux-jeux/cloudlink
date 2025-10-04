@@ -27,7 +27,7 @@ class example_commands:
     def __init__(self, parent, protocol):
         
         # Creating custom commands - This example adds a custom command called "foobar".
-        @server.on_command(cmd="foobar", schema=protocol.schema)
+        @srv.on_command(cmd="foobar", schema=protocol.schema)
         async def foobar(client, message):
             print("Foobar!")
 
