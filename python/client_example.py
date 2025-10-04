@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
 
 app = Flask(__name__)
-CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "ws://127.0.0.1:3000/")  # Connexion au serveur CloudLink
+CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "wss://cloudlink-server.onrender.com/")  # Connexion au serveur CloudLink
 
 # --- Core CloudLink ---
 async def cloudlink_action_async(action_coro, ws_url):
