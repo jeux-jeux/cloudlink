@@ -1,17 +1,16 @@
 # proxy.py
 import os
+import asyncio
 import threading
 import random
 import traceback
-from functools import partial
 from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
-import websockets
 
 app = Flask(__name__)
 
-# URL WebSocket local du serveur CloudLink
-CLOUDLINK_WS_URL = "ws://127.0.0.1:3000/"  # correspond au server.py sur 0.0.0.0:3000
+# URL WebSocket du serveur CloudLink
+CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "ws://127.0.0.1:3000/")
 
 # === Core: connect -> action -> disconnect ===
 async def cloudlink_action_async(action_coro, ws_url):
@@ -40,6 +39,7 @@ async def cloudlink_action_async(action_coro, ws_url):
     async def _on_disconnect():
         finished.set()
 
+    # Exécuter le client CloudLink dans un thread séparé
     def run_client():
         try:
             client.run(host=ws_url)
@@ -51,12 +51,10 @@ async def cloudlink_action_async(action_coro, ws_url):
     thread.start()
 
     await finished.wait()
-    if result["ok"]:
-        return {"status": "ok", "username": result.get("username")}
-    else:
-        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
+    return result if result["ok"] else {"status": "error", "username": result.get("username"), "detail": result.get("error")}
 
 def cloudlink_action(action_coro):
+    """Wrapper Flask-friendly pour exécuter une action CloudLink."""
     return asyncio.run(cloudlink_action_async(action_coro, CLOUDLINK_WS_URL))
 
 # === Routes ===
@@ -66,7 +64,7 @@ def route_global_message():
     rooms = data.get("rooms")
     message = data.get("message")
     if not isinstance(rooms, list) or not message:
-        return jsonify({"status":"error","message":"rooms (list) and message required"}), 400
+        return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
 
     async def action(client, username):
         await client.protocol.send_gmsg(message, rooms=rooms)
@@ -80,7 +78,7 @@ def route_private_message():
     room = data.get("room")
     message = data.get("message")
     if not username_target or not room or not message:
-        return jsonify({"status":"error","message":"username, room and message required"}), 400
+        return jsonify({"status": "error", "message": "username, room and message required"}), 400
 
     async def action(client, username):
         await client.protocol.send_pmsg(username_target, room, message)
@@ -94,7 +92,7 @@ def route_global_variable():
     name = data.get("name")
     val = data.get("val")
     if not room or name is None:
-        return jsonify({"status":"error","message":"room and name required"}), 400
+        return jsonify({"status": "error", "message": "room and name required"}), 400
 
     async def action(client, username):
         await client.protocol.send_gvar(room, name, val)
@@ -109,7 +107,7 @@ def route_private_variable():
     name = data.get("name")
     val = data.get("val")
     if not username_target or not room or name is None:
-        return jsonify({"status":"error","message":"username, room and name required"}), 400
+        return jsonify({"status": "error", "message": "username, room and name required"}), 400
 
     async def action(client, username):
         await client.protocol.send_pvar(username_target, room, name, val)
@@ -118,7 +116,7 @@ def route_private_variable():
 
 @app.route("/_health", methods=["GET"])
 def health():
-    return jsonify({"status":"ok"})
+    return jsonify({"status": "ok"})
 
 @app.route("/")
 def home():
