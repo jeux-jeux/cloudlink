@@ -185,7 +185,7 @@ def global_message():
         return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
 
     async def action(client, username):
-        await client.protocol.send_gmsg(message, rooms=rooms)
+        await client.send_gmsg(message, rooms=rooms)
 
     return jsonify(cloudlink_action(action))
 
@@ -200,7 +200,7 @@ def private_message():
         return jsonify({"status": "error", "message": "username, room and message required"}), 400
 
     async def action(client, username):
-        await client.protocol.send_pmsg(username_target, room, message)
+        await client.send_pmsg(username_target, room, message)
 
     return jsonify(cloudlink_action(action))
 
@@ -215,7 +215,7 @@ def global_variable():
         return jsonify({"status": "error", "message": "room and name required"}), 400
 
     async def action(client, username):
-        await client.protocol.send_gvar(room, name, val)
+        await client.send_gvar(room, name, val)
 
     return jsonify(cloudlink_action(action))
 
@@ -231,7 +231,7 @@ def private_variable():
         return jsonify({"status": "error", "message": "username, room and name required"}), 400
 
     async def action(client, username):
-        await client.protocol.send_pvar(username_target, room, name, val)
+        await client.send_pvar(username_target, room, name, val)
 
     return jsonify(cloudlink_action(action))
 
