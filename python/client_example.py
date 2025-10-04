@@ -12,20 +12,13 @@ from urllib.parse import urlsplit
 
 app = Flask(__name__)
 
-# URL du serveur CloudLink
 CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "wss://cloudlink-server.onrender.com/")
-
-# En-têtes WebSocket (comme TurboWarp)
 WS_EXTRA_HEADERS = [
     ("Origin", "tw-editor://."),
     ("User-Agent", "turbowarp-desktop/1.14.4")
 ]
 
-# -------------------------
-# Helpers
-# -------------------------
 def sanitize_ws_url(url: str) -> str:
-    """Nettoie et formate l’URL WebSocket"""
     if not url:
         return url
     url = url.replace("\\", "").strip()
@@ -39,9 +32,7 @@ def sanitize_ws_url(url: str) -> str:
     url = url.rstrip("/") + "/"
     return url
 
-
 def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
-    """Teste un handshake WebSocket simple"""
     async def _attempt():
         out = {"ok": False, "exc": None, "status_code": None, "response_headers": None}
         try:
@@ -74,39 +65,44 @@ async def cloudlink_action_async(action_coro, ws_url):
     finished = asyncio.Event()
     result = {"ok": False, "error": None, "username": None}
 
-    async def _worker():
+    @client.on_connect
+    async def _on_connect():
         try:
-            # Connexion WebSocket
-            await client.connect(host=ws_url, extra_headers=WS_EXTRA_HEADERS)
-
-            # Génération et définition du username
             username = str(random.randint(100_000_000, 999_999_999))
             result["username"] = username
             await client.protocol.set_username(username)
-
-            # Exécution de l’action (message / variable / etc.)
             await action_coro(client, username)
-
             result["ok"] = True
         except Exception as e:
             result["error"] = str(e)
             traceback.print_exc()
         finally:
-            # Déconnexion sécurisée
             try:
-                if getattr(client, "client", None):
-                    await client.disconnect()
+                await client.disconnect()
             except Exception:
                 pass
+
+    @client.on_disconnect
+    async def _on_disconnect():
+        finished.set()
+
+    def run_client():
+        try:
+            # inject WS_EXTRA_HEADERS
+            try:
+                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+            except Exception as e:
+                print("Warning: failed to monkeypatch client.ws.connect ->", e)
+            client.run(host=ws_url)
+        except Exception as e:
+            result["error"] = str(e)
+            traceback.print_exc()
             finished.set()
 
-    asyncio.create_task(_worker())
+    thread = threading.Thread(target=run_client, daemon=True)
+    thread.start()
     await finished.wait()
-    if result["ok"]:
-        return {"status": "ok", "username": result.get("username")}
-    else:
-        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
-
+    return result
 
 def cloudlink_action(action_coro):
     raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
@@ -190,9 +186,6 @@ def home():
     return "Serveur HTTP en ligne ✅"
 
 
-# -------------------------
-# Diagnostic endpoints
-# -------------------------
 @app.route("/debug-handshake", methods=["GET"])
 def debug_handshake():
     raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
@@ -210,42 +203,48 @@ def debug_connect_client():
     raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
     ws_url = sanitize_ws_url(raw)
     timeout = int(request.args.get("timeout", "8"))
-
     result = {"ok": False, "error": None, "trace": None}
 
     def run_client_and_capture():
-        async def worker():
-            client = cl_client()
+        client = cl_client()
+        finished_flag = threading.Event()
+
+        @client.on_connect
+        async def _on_connect():
             try:
-                await client.connect(host=ws_url, extra_headers=WS_EXTRA_HEADERS)
                 username = str(random.randint(100_000_000, 999_999_999))
                 await client.protocol.set_username(username)
                 result["ok"] = True
             except Exception as e:
                 result["error"] = str(e)
-                result["trace"] = traceback.format_exc()
+                traceback.print_exc()
             finally:
                 try:
-                    if getattr(client, "client", None):
-                        await client.disconnect()
+                    await client.disconnect()
                 except Exception:
                     pass
 
-        asyncio.run(worker())
+        @client.on_disconnect
+        async def _on_disconnect():
+            finished_flag.set()
+
+        try:
+            client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+            client.run(host=ws_url)
+        except Exception as e:
+            result["error"] = str(e)
+            result["trace"] = traceback.format_exc()
+            finished_flag.set()
 
     thread = threading.Thread(target=run_client_and_capture, daemon=True)
     thread.start()
     thread.join(timeout=timeout)
-
     if thread.is_alive():
         return jsonify({"status": "timeout", "detail": f"Client still alive after {timeout}s", "result": result})
     else:
         return jsonify({"status": "finished", "result": result})
 
 
-# -------------------------
-# Run
-# -------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
