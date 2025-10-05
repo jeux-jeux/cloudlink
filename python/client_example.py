@@ -26,29 +26,71 @@ def check_key(data):
         return False
     return True
 
-def fetch_cloudlink_ws_url():
-    try:
-        proxy_auth = os.getenv("PROXY")
-        response = requests.get(proxy_auth, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        url = data.get("web_socket_server")
-        if not url:
-            print("⚠️ Aucun champ 'web_socket_server' trouvé dans la réponse.")
-            return "Pas de json dans la reponse du proxy authentification !"
-        print(f"✅ web_socket_url obtenu : {url}")
-        return url
-    except Exception as e:
-        print(f"⚠️ Impossible de récupérer l'URL depuis le proxy : {e}")
-        return "error : immpossible to get cloudlink_url"
 
+def fetch_cloudlink_ws_url():
+    """Récupère l'URL WebSocket du serveur CloudLink via le proxy d'authentification."""
+    proxy_auth = os.getenv("PROXY")
+    if not proxy_auth:
+        print("⚠️ Variable d'environnement PROXY non définie.")
+        return "error: PROXY env not set"
+
+    auth_key = os.getenv("CLE")
+
+    print(f"🔍 Tentative de récupération depuis : {proxy_auth}")
+    try:
+        # Première tentative : requête GET
+        response = requests.get(proxy_auth, headers={"Origin": "https://cloudlink-manager.onrender.com"}, timeout=6)
+        print(f"↩️ Réponse GET code {response.status_code}")
+        response.raise_for_status()
+
+        try:
+            data = response.json()
+        except Exception as e:
+            print(f"⚠️ Erreur JSON lors du GET : {e}")
+            data = None
+
+        if data:
+            url = data.get("web_socket_server")
+            if url:
+                print(f"✅ URL WebSocket obtenue (GET) : {url}")
+                return url
+            else:
+                print(f"⚠️ Clé 'web_socket_server' absente dans la réponse : {list(data.keys())}")
+
+        # Deuxième tentative : requête POST (si une clé est disponible)
+        if auth_key:
+            print("🔁 Tentative POST avec clé d'authentification...")
+            response = requests.post(proxy_auth, json={"cle": auth_key}, timeout=6)
+            print(f"↩️ Réponse POST code {response.status_code}")
+            response.raise_for_status()
+            data = response.json()
+            url = data.get("web_socket_server")
+            if url:
+                print(f"✅ URL WebSocket obtenue (POST) : {url}")
+                return url
+            else:
+                print(f"⚠️ Clé 'web_socket_server' absente dans la réponse POST : {list(data.keys())}")
+        else:
+            print("ℹ️ Aucune clé d'authentification trouvée pour le POST.")
+
+        return "error: no valid url found"
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Erreur réseau lors de la récupération de l'URL : {e}")
+        return "error: network failure"
+    except Exception as e:
+        print(f"❌ Exception inattendue : {e}")
+        return "error: unexpected failure"
+
+
+# -------------------------
 # En-têtes WebSocket
+# -------------------------
 WS_EXTRA_HEADERS = [
     ("Origin", "https://cloudlink-manager.onrender.com/"),
     ("User-Agent", "turbowarp-desktop/1.14.4")
 ]
 
-# Timeouts (en secondes)
 USERNAME_TIMEOUT = 5
 ACTION_TIMEOUT = 6
 TOTAL_ACTION_TIMEOUT = 10
@@ -69,6 +111,7 @@ def sanitize_ws_url(url: str) -> str:
         url = "wss://" + url.lstrip("/")
     url = url.rstrip("/") + "/"
     return url
+
 
 def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
     async def _attempt():
@@ -97,8 +140,9 @@ def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
         except Exception:
             pass
 
+
 # -------------------------
-# Core CloudLink runner (avec timeouts)
+# Core CloudLink runner
 # -------------------------
 async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION_TIMEOUT):
     app.logger.debug("proxy: cloudlink_action_async start")
@@ -152,6 +196,7 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
     else:
         return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
 
+
 def cloudlink_action(action_coro):
     raw = fetch_cloudlink_ws_url()
     ws_url = sanitize_ws_url(raw)
@@ -159,6 +204,7 @@ def cloudlink_action(action_coro):
         return asyncio.run(cloudlink_action_async(action_coro, ws_url))
     except Exception as e:
         return {"status": "error", "message": "internal_error", "detail": str(e)}
+
 
 # -------------------------
 # Routes principales
@@ -172,9 +218,12 @@ def route_global_message():
     message = data.get("message")
     if not isinstance(rooms, list) or not message:
         return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
+
     async def action(client, username):
         client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
+
     return jsonify(cloudlink_action(action))
+
 
 @app.route("/sending/private-message", methods=["POST"])
 def route_private_message():
@@ -186,9 +235,12 @@ def route_private_message():
     message = data.get("message")
     if not username_target or not room or not message:
         return jsonify({"status": "error", "message": "username, room and message required"}), 400
+
     async def action(client, username):
         client.send_packet({"cmd": "pmsg", "val": message, "id": username_target, "room": room})
+
     return jsonify(cloudlink_action(action))
+
 
 @app.route("/sending/global-variable", methods=["POST"])
 def route_global_variable():
@@ -200,9 +252,12 @@ def route_global_variable():
     val = data.get("val")
     if not room or name is None:
         return jsonify({"status": "error", "message": "room and name required"}), 400
+
     async def action(client, username):
         client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
+
     return jsonify(cloudlink_action(action))
+
 
 @app.route("/sending/private-variable", methods=["POST"])
 def route_private_variable():
@@ -215,9 +270,12 @@ def route_private_variable():
     val = data.get("val")
     if not username_target or not room or name is None:
         return jsonify({"status": "error", "message": "username, room and name required"}), 400
+
     async def action(client, username):
         client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "id": username_target})
+
     return jsonify(cloudlink_action(action))
+
 
 @app.route("/deleter", methods=["POST"])
 def route_kick_client():
@@ -228,13 +286,17 @@ def route_kick_client():
     targets = data.get("targets")
     if not room or not isinstance(targets, list) or not targets:
         return jsonify({"status": "error", "message": "room and targets (list) required"}), 400
+
     secret = os.getenv("ADMIN_SECRET", "").strip()
+
     async def action(client, username):
         payload = {"cmd": "kick", "room": room, "targets": targets}
         if secret:
             payload["secret"] = secret
         client.send_packet(payload)
+
     return jsonify(cloudlink_action(action))
+
 
 # -------------------------
 # Health & Debug
@@ -246,12 +308,14 @@ def health():
         return jsonify({"status": "error", "message": "clé invalide"}), 403
     return jsonify({"status": "ok"})
 
+
 @app.route("/checking", methods=["POST"])
 def home():
     data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
     return "Serveur HTTP en ligne ✅"
+
 
 @app.route("/checking/handshake", methods=["POST"])
 def debug_handshake():
@@ -263,9 +327,10 @@ def debug_handshake():
     tests = {
         "default": ws_handshake_test_sync(url),
         "origin": ws_handshake_test_sync(url, extra_headers=[("Origin", "https://cloudlink-manager.onrender.com/")]),
-        "origin+ua": ws_handshake_test_sync(url, extra_headers=WS_EXTRA_HEADERS)
+        "origin+ua": ws_handshake_test_sync(url, extra_headers=WS_EXTRA_HEADERS),
     }
     return jsonify({"ws_url": url, "tests": tests})
+
 
 @app.route("/checking/connect-client", methods=["POST"])
 def debug_connect_client():
@@ -277,6 +342,7 @@ def debug_connect_client():
     timeout = int(request.args.get("timeout", str(TOTAL_ACTION_TIMEOUT)))
 
     result = {"ok": False, "error": None, "trace": None}
+
     def run_client_and_capture():
         client = cl_client()
         finished_flag = threading.Event()
@@ -315,6 +381,7 @@ def debug_connect_client():
         return jsonify({"status": "timeout", "detail": f"Client still alive after {timeout}s", "result": result})
     else:
         return jsonify({"status": "finished", "result": result})
+
 
 # -------------------------
 # Run
