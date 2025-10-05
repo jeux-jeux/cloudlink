@@ -11,6 +11,8 @@ from cloudlink import client as cl_client
 import websockets
 import logging
 import time
+import requests
+
 
 app = Flask(__name__)
 app.logger.setLevel(logging.DEBUG)
@@ -18,16 +20,39 @@ app.logger.setLevel(logging.DEBUG)
 # -------------------------
 # Configuration
 # -------------------------
-CLOUDLINK_WS_URL = os.getenv("CLOUDLINK_WS_URL", "wss://cloudlink-server.onrender.com/")
+
+def check_key(data):
+    """Vérifie que le corps JSON contient une clé 'cle' valide."""
+    expected = os.getenv("CLE")
+    received = data.get("cle")
+    if not expected or received != expected:
+        return False
+    return True
+    
+def fetch_cloudlink_ws_url():
+    try:
+        proxy_auth = os.getenv("PROXY")
+        response = requests.get(proxy_auth, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        url = data.get("web_socket_url")
+        if not url:
+            print("⚠️ Aucun champ 'web_socket_url' trouvé dans la réponse.")
+            return "Pas de json dans la reponse du proxy authentification !"
+        print(f"✅ web_socket_url obtenu : {url}")
+        return url
+    except Exception as e:
+        print(f"⚠️ Impossible de récupérer l'URL depuis le proxy : {e}")
+        return "wss://cloudlink-server.onrender.com/"CLOUDLINK_WS_URL = fetch_cloudlink_ws_url()
 WS_EXTRA_HEADERS = [
-    ("Origin", "tw-editor://."),
+    ("Origin", "https://cloudlink-sender.onrender.com/"),
     ("User-Agent", "turbowarp-desktop/1.14.4")
 ]
 
 # Timeouts (en secondes)
-USERNAME_TIMEOUT = int(os.getenv("USERNAME_TIMEOUT", "5"))
-ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "6"))
-TOTAL_ACTION_TIMEOUT = int(os.getenv("TOTAL_ACTION_TIMEOUT", "10"))
+USERNAME_TIMEOUT = 5
+ACTION_TIMEOUT = 6
+TOTAL_ACTION_TIMEOUT = 10
 
 # -------------------------
 # Helpers
@@ -177,7 +202,7 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
 
 
 def cloudlink_action(action_coro):
-    raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
+    raw = url
     ws_url = sanitize_ws_url(raw)
     app.logger.info(f"proxy: starting cloudlink_action -> {ws_url}")
     try:
@@ -190,10 +215,12 @@ def cloudlink_action(action_coro):
 # -------------------------
 # Routes (4 principales)
 # -------------------------
-@app.route("/global-message", methods=["POST"])
+@app.route("/sending/global-message", methods=["POST"])
 def route_global_message():
     app.logger.info("proxy: /global-message called")
     data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
     rooms = data.get("rooms")
     message = data.get("message")
     if not isinstance(rooms, list) or not message:
@@ -207,10 +234,12 @@ def route_global_message():
     return jsonify(cloudlink_action(action))
 
 
-@app.route("/private-message", methods=["POST"])
+@app.route("/sending/private-message", methods=["POST"])
 def route_private_message():
     app.logger.info("proxy: /private-message called")
     data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
     username_target = data.get("username")
     room = data.get("room")
     message = data.get("message")
@@ -224,10 +253,12 @@ def route_private_message():
     return jsonify(cloudlink_action(action))
 
 
-@app.route("/global-variable", methods=["POST"])
+@app.route("/sending/global-variable", methods=["POST"])
 def route_global_variable():
     app.logger.info("proxy: /global-variable called")
     data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
     room = data.get("room")
     name = data.get("name")
     val = data.get("val")
@@ -241,10 +272,12 @@ def route_global_variable():
     return jsonify(cloudlink_action(action))
 
 
-@app.route("/private-variable", methods=["POST"])
+@app.route("/sending/private-variable", methods=["POST"])
 def route_private_variable():
     app.logger.info("proxy: /private-variable called")
     data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
     username_target = data.get("username")
     room = data.get("room")
     name = data.get("name")
@@ -258,38 +291,72 @@ def route_private_variable():
 
     return jsonify(cloudlink_action(action))
 
+@app.route("/deleter", methods=["POST"])
+def route_kick_client():
+    data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
+    room = data.get("room")
+    targets = data.get("targets")  # MUST be a list
+    if not room or not isinstance(targets, list) or not targets:
+        return jsonify({"status": "error", "message": "room and targets (non-empty list) required"}), 400
+
+    # secret optionnel : définis ADMIN_SECRET dans l'env du proxy si besoin
+    secret = os.getenv("ADMIN_SECRET", "").strip()
+
+    async def action(client, username):
+        # Envoie la commande kick au serveur ; server handler s'occupera du reste
+        payload = {
+            "cmd": "kick",
+            "room": room,
+            "targets": targets
+        }
+        if secret:
+            payload["secret"] = secret
+        # send_packet est sync (non await)
+        client.send_packet(payload)
+
+    return jsonify(cloudlink_action(action))
 
 # -------------------------
 # Health & Debug
 # -------------------------
-@app.route("/_health", methods=["GET"])
+@app.route("/checking/health", methods=["POST"])
 def health():
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
     return jsonify({"status": "ok"})
 
 
-@app.route("/", methods=["GET"])
+@app.route("/checking", methods=["POST"])
 def home():
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
     return "Serveur HTTP en ligne ✅"
 
 
-@app.route("/debug-handshake", methods=["GET"])
+@app.route("/checking/handshake", methods=["POST"])
 def debug_handshake():
-    raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
+    raw = url
     url = sanitize_ws_url(raw)
     tests = {
         "default": ws_handshake_test_sync(url, extra_headers=None),
-        "origin": ws_handshake_test_sync(url, extra_headers=[("Origin", "tw-editor://.")]),
-        "origin+ua": ws_handshake_test_sync(url, extra_headers=[("Origin", "tw-editor://."), ("User-Agent", "turbowarp-desktop/1.14.4")])
+        "origin": ws_handshake_test_sync(url, extra_headers=[("Origin", "https://cloudlink-manager.onrender.com/")]),
+        "origin+ua": ws_handshake_test_sync(url, extra_headers=[("Origin", "https://cloudlink-manager.onrender.com/"), ("User-Agent", "turbowarp-desktop/1.14.4")])
     }
     return jsonify({"ws_url": url, "tests": tests})
 
 
-@app.route("/debug-connect-client", methods=["POST"])
+@app.route("/checking/connect-client", methods=["POST"])
 def debug_connect_client():
-    raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
+    raw = url
     ws_url = sanitize_ws_url(raw)
     timeout = int(request.args.get("timeout", str(TOTAL_ACTION_TIMEOUT)))
-
+    
     result = {"ok": False, "error": None, "trace": None}
 
     def run_client_and_capture():
