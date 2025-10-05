@@ -43,7 +43,7 @@ def fetch_cloudlink_ws_url():
         return url
     except Exception as e:
         print(f"⚠️ Impossible de récupérer l'URL depuis le proxy : {e}")
-        return "wss://cloudlink-server.onrender.com/"CLOUDLINK_WS_URL = fetch_cloudlink_ws_url()
+        return "error : immpossible to get cloudlink_url"
 WS_EXTRA_HEADERS = [
     ("Origin", "https://cloudlink-manager.onrender.com/"),
     ("User-Agent", "turbowarp-desktop/1.14.4")
