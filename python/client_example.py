@@ -1,4 +1,3 @@
-# proxy_http.py
 import os
 import asyncio
 import threading
@@ -13,14 +12,12 @@ import logging
 import time
 import requests
 
-
 app = Flask(__name__)
 app.logger.setLevel(logging.DEBUG)
 
 # -------------------------
 # Configuration
 # -------------------------
-
 def check_key(data):
     """Vérifie que le corps JSON contient une clé 'cle' valide."""
     expected = os.getenv("CLE")
@@ -28,7 +25,7 @@ def check_key(data):
     if not expected or received != expected:
         return False
     return True
-    
+
 def fetch_cloudlink_ws_url():
     try:
         proxy_auth = os.getenv("PROXY")
@@ -44,6 +41,8 @@ def fetch_cloudlink_ws_url():
     except Exception as e:
         print(f"⚠️ Impossible de récupérer l'URL depuis le proxy : {e}")
         return "error : immpossible to get cloudlink_url"
+
+# En-têtes WebSocket
 WS_EXTRA_HEADERS = [
     ("Origin", "https://cloudlink-manager.onrender.com/"),
     ("User-Agent", "turbowarp-desktop/1.14.4")
@@ -70,7 +69,6 @@ def sanitize_ws_url(url: str) -> str:
         url = "wss://" + url.lstrip("/")
     url = url.rstrip("/") + "/"
     return url
-
 
 def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
     async def _attempt():
@@ -99,7 +97,6 @@ def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
         except Exception:
             pass
 
-
 # -------------------------
 # Core CloudLink runner (avec timeouts)
 # -------------------------
@@ -115,109 +112,59 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
         try:
             username = str(random.randint(100_000_000, 999_999_999))
             result["username"] = username
-            app.logger.debug(f"proxy: attempting set_username {username} with timeout {USERNAME_TIMEOUT}s")
-
-            # Timeout for set_username
-            try:
-                await asyncio.wait_for(client.protocol.set_username(username), timeout=USERNAME_TIMEOUT)
-            except asyncio.TimeoutError:
-                raise TimeoutError(f"set_username timed out after {USERNAME_TIMEOUT}s")
-
-            app.logger.debug("proxy: set_username OK, running action with timeout %ss" % ACTION_TIMEOUT)
-
-            # Timeout for the provided action (send gmsg/pmsg/gvar/pvar)
-            try:
-                await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
-            except asyncio.TimeoutError:
-                raise TimeoutError(f"action timed out after {ACTION_TIMEOUT}s")
-
-            # give short time for the client internal tasks to flush the packet
+            await asyncio.wait_for(client.protocol.set_username(username), timeout=USERNAME_TIMEOUT)
+            await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
             await asyncio.sleep(0.15)
             result["ok"] = True
-            app.logger.debug("proxy: action completed successfully inside client loop")
         except Exception as e:
             result["error"] = str(e)
             result["trace"] = traceback.format_exc()
             app.logger.exception("proxy: exception in client on_connect")
         finally:
-            # Always attempt a graceful disconnect from inside client's loop
             try:
-                app.logger.debug("proxy: calling client.disconnect() from inside client loop")
                 await client.disconnect()
             except Exception:
-                app.logger.exception("proxy: exception while disconnecting (inside client loop)")
+                pass
 
     @client.on_disconnect
     async def _on_disconnect():
-        app.logger.debug("proxy: client.on_disconnect -> set finished_thread")
         finished_thread.set()
 
     def run_client():
         try:
-            app.logger.debug("proxy: run_client thread starting; monkeypatching ws.connect")
-            try:
-                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
-            except Exception as e:
-                app.logger.warning(f"proxy: monkeypatch client.ws.connect failed: {e}")
-
-            app.logger.debug(f"proxy: client.run(host={ws_url})")
+            client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
             client.run(host=ws_url)
-            app.logger.debug("proxy: client.run returned (thread end)")
             finished_thread.set()
         except Exception as e:
             result["error"] = str(e)
             result["trace"] = traceback.format_exc()
-            app.logger.exception("proxy: exception inside run_client")
-            try:
-                finished_thread.set()
-            except Exception:
-                pass
+            finished_thread.set()
 
     thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
-
-    # Wait for finished_thread with an overall timeout to avoid blocking HTTP forever
     loop = asyncio.get_running_loop()
     try:
-        app.logger.debug(f"proxy: waiting for finished_thread up to {total_timeout}s")
         await asyncio.wait_for(loop.run_in_executor(None, finished_thread.wait), timeout=total_timeout)
     except asyncio.TimeoutError:
-        app.logger.warning("proxy: timeout waiting for client to finish")
-        # Provide trace if exists
-        out = {"status": "error", "username": result.get("username"), "detail": "timeout waiting for disconnect"}
-        if result.get("trace"):
-            out["trace"] = result.get("trace")
-        return out
-    except Exception as e:
-        app.logger.exception("proxy: unexpected error waiting for finished_thread")
-        return {"status": "error", "username": result.get("username"), "detail": str(e)}
-
+        return {"status": "error", "username": result.get("username"), "detail": "timeout waiting for disconnect"}
     if result.get("ok"):
         return {"status": "ok", "username": result.get("username")}
     else:
-        out = {"status": "error", "username": result.get("username"), "detail": result.get("error")}
-        if result.get("trace"):
-            out["trace"] = result.get("trace")
-        return out
-
+        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
 
 def cloudlink_action(action_coro):
-    raw = url
+    raw = fetch_cloudlink_ws_url()
     ws_url = sanitize_ws_url(raw)
-    app.logger.info(f"proxy: starting cloudlink_action -> {ws_url}")
     try:
         return asyncio.run(cloudlink_action_async(action_coro, ws_url))
     except Exception as e:
-        app.logger.exception("proxy: exception in cloudlink_action asyncio.run")
         return {"status": "error", "message": "internal_error", "detail": str(e)}
 
-
 # -------------------------
-# Routes (4 principales)
+# Routes principales
 # -------------------------
 @app.route("/sending/global-message", methods=["POST"])
 def route_global_message():
-    app.logger.info("proxy: /global-message called")
     data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
@@ -225,18 +172,12 @@ def route_global_message():
     message = data.get("message")
     if not isinstance(rooms, list) or not message:
         return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
-
     async def action(client, username):
-        app.logger.debug(f"proxy: action send gmsg username={username} rooms={rooms} message={message!r}")
-        # send_packet is synchronous; don't await it
         client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
-
     return jsonify(cloudlink_action(action))
-
 
 @app.route("/sending/private-message", methods=["POST"])
 def route_private_message():
-    app.logger.info("proxy: /private-message called")
     data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
@@ -245,17 +186,12 @@ def route_private_message():
     message = data.get("message")
     if not username_target or not room or not message:
         return jsonify({"status": "error", "message": "username, room and message required"}), 400
-
     async def action(client, username):
-        app.logger.debug(f"proxy: action send pmsg username={username} -> target={username_target} room={room}")
         client.send_packet({"cmd": "pmsg", "val": message, "id": username_target, "room": room})
-
     return jsonify(cloudlink_action(action))
-
 
 @app.route("/sending/global-variable", methods=["POST"])
 def route_global_variable():
-    app.logger.info("proxy: /global-variable called")
     data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
@@ -264,17 +200,12 @@ def route_global_variable():
     val = data.get("val")
     if not room or name is None:
         return jsonify({"status": "error", "message": "room and name required"}), 400
-
     async def action(client, username):
-        app.logger.debug(f"proxy: action send gvar name={name} room={room}")
         client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
-
     return jsonify(cloudlink_action(action))
-
 
 @app.route("/sending/private-variable", methods=["POST"])
 def route_private_variable():
-    app.logger.info("proxy: /private-variable called")
     data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
@@ -284,11 +215,8 @@ def route_private_variable():
     val = data.get("val")
     if not username_target or not room or name is None:
         return jsonify({"status": "error", "message": "username, room and name required"}), 400
-
     async def action(client, username):
-        app.logger.debug(f"proxy: action send pvar name={name} room={room} -> target={username_target}")
         client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "id": username_target})
-
     return jsonify(cloudlink_action(action))
 
 @app.route("/deleter", methods=["POST"])
@@ -297,25 +225,15 @@ def route_kick_client():
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
     room = data.get("room")
-    targets = data.get("targets")  # MUST be a list
+    targets = data.get("targets")
     if not room or not isinstance(targets, list) or not targets:
-        return jsonify({"status": "error", "message": "room and targets (non-empty list) required"}), 400
-
-    # secret optionnel : définis ADMIN_SECRET dans l'env du proxy si besoin
+        return jsonify({"status": "error", "message": "room and targets (list) required"}), 400
     secret = os.getenv("ADMIN_SECRET", "").strip()
-
     async def action(client, username):
-        # Envoie la commande kick au serveur ; server handler s'occupera du reste
-        payload = {
-            "cmd": "kick",
-            "room": room,
-            "targets": targets
-        }
+        payload = {"cmd": "kick", "room": room, "targets": targets}
         if secret:
             payload["secret"] = secret
-        # send_packet est sync (non await)
         client.send_packet(payload)
-
     return jsonify(cloudlink_action(action))
 
 # -------------------------
@@ -323,42 +241,42 @@ def route_kick_client():
 # -------------------------
 @app.route("/checking/health", methods=["POST"])
 def health():
+    data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
     return jsonify({"status": "ok"})
 
-
 @app.route("/checking", methods=["POST"])
 def home():
+    data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
     return "Serveur HTTP en ligne ✅"
 
-
 @app.route("/checking/handshake", methods=["POST"])
 def debug_handshake():
+    data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
-    raw = url
+    raw = fetch_cloudlink_ws_url()
     url = sanitize_ws_url(raw)
     tests = {
-        "default": ws_handshake_test_sync(url, extra_headers=None),
+        "default": ws_handshake_test_sync(url),
         "origin": ws_handshake_test_sync(url, extra_headers=[("Origin", "https://cloudlink-manager.onrender.com/")]),
-        "origin+ua": ws_handshake_test_sync(url, extra_headers=[("Origin", "https://cloudlink-manager.onrender.com/"), ("User-Agent", "turbowarp-desktop/1.14.4")])
+        "origin+ua": ws_handshake_test_sync(url, extra_headers=WS_EXTRA_HEADERS)
     }
     return jsonify({"ws_url": url, "tests": tests})
 
-
 @app.route("/checking/connect-client", methods=["POST"])
 def debug_connect_client():
+    data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
-    raw = url
+    raw = fetch_cloudlink_ws_url()
     ws_url = sanitize_ws_url(raw)
     timeout = int(request.args.get("timeout", str(TOTAL_ACTION_TIMEOUT)))
-    
-    result = {"ok": False, "error": None, "trace": None}
 
+    result = {"ok": False, "error": None, "trace": None}
     def run_client_and_capture():
         client = cl_client()
         finished_flag = threading.Event()
@@ -393,18 +311,15 @@ def debug_connect_client():
     thread = threading.Thread(target=run_client_and_capture, daemon=True)
     thread.start()
     thread.join(timeout=timeout)
-
     if thread.is_alive():
-        app.logger.warning("proxy: debug_connect_client timed out")
         return jsonify({"status": "timeout", "detail": f"Client still alive after {timeout}s", "result": result})
     else:
         return jsonify({"status": "finished", "result": result})
-
 
 # -------------------------
 # Run
 # -------------------------
 if __name__ == "__main__":
-    port = 5000
+    port = int(os.getenv("PORT", 5000))
     app.logger.info(f"proxy: starting app on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
