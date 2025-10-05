@@ -405,6 +405,6 @@ def debug_connect_client():
 # Run
 # -------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
+    port = 5000
     app.logger.info(f"proxy: starting app on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
