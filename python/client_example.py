@@ -9,8 +9,11 @@ from urllib.parse import urlsplit
 from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
 import websockets
+import logging
+import time
 
 app = Flask(__name__)
+app.logger.setLevel(logging.DEBUG)
 
 # -------------------------
 # Configuration
@@ -21,6 +24,10 @@ WS_EXTRA_HEADERS = [
     ("Origin", "tw-editor://."),
     ("User-Agent", "turbowarp-desktop/1.14.4")
 ]
+
+# Timeout en secondes pour qu'une requête HTTP ne reste pas bloquée indéfiniment
+DEFAULT_ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "10"))
+
 
 # -------------------------
 # Helpers
@@ -37,7 +44,6 @@ def sanitize_ws_url(url: str) -> str:
     parts = urlsplit(url)
     if not parts.scheme:
         url = "wss://" + url.lstrip("/")
-    # assure exactement un slash final
     url = url.rstrip("/") + "/"
     return url
 
@@ -75,68 +81,74 @@ def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
 
 
 # -------------------------
-# Core CloudLink runner (corrigé pour éviter blocage)
+# Core CloudLink runner (robuste)
 # -------------------------
-async def cloudlink_action_async(action_coro, ws_url):
+async def cloudlink_action_async(action_coro, ws_url, timeout=DEFAULT_ACTION_TIMEOUT):
     """
     Connecte un client CloudLink, exécute action_coro(client, username) (async),
     puis se déconnecte proprement. Attend la déconnexion en utilisant threading.Event
-    pour ne pas mélanger les boucles asyncio.
+    et timeout pour éviter blocage infini.
     """
+    app.logger.debug("proxy: cloudlink_action_async start")
     client = cl_client()
 
     # Event thread-safe utilisé pour signaler la fin (set depuis le thread du client).
     finished_thread = threading.Event()
 
     # Conteneur résultat
-    result = {"ok": False, "error": None, "username": None}
+    result = {"ok": False, "error": None, "username": None, "trace": None}
 
     @client.on_connect
     async def _on_connect():
+        app.logger.debug("proxy: client.on_connect callback running")
         try:
-            # username aléatoire pour la session
             username = str(random.randint(100_000_000, 999_999_999))
             result["username"] = username
 
-            # set_username est une coroutine → await obligatoire
+            app.logger.debug(f"proxy: setting username {username}")
             await client.protocol.set_username(username)
 
-            # action_coro est async (défini dans les routes).
-            # IMPORTANT: action_coro doit utiliser client.send_packet(...) SANS await.
+            # Appel de l'action (async). IMPORTANT: action_coro doit utiliser client.send_packet(...) SANS await.
             await action_coro(client, username)
 
+            # Petit délai pour laisser le système scheduler l'envoi du paquet
+            await asyncio.sleep(0.15)
+
             result["ok"] = True
+            app.logger.debug("proxy: action done, about to disconnect")
         except Exception as e:
             result["error"] = str(e)
-            traceback.print_exc()
+            result["trace"] = traceback.format_exc()
+            app.logger.exception("proxy: exception in on_connect")
         finally:
-            # demande déconnexion propre (await car coroutine)
             try:
                 await client.disconnect()
             except Exception:
-                pass
+                app.logger.exception("proxy: exception during disconnect() in on_connect finally")
 
     @client.on_disconnect
     async def _on_disconnect():
-        # Cet async callback est exécuté dans la boucle du client (autre thread).
-        # On peut appeler set() sur threading.Event depuis n'importe quel thread.
+        app.logger.debug("proxy: client.on_disconnect called — setting finished_thread")
+        # appelé dans la boucle du client (autre thread) — safe d'appeler threading.Event.set()
         finished_thread.set()
 
     # run client.run(host=...) dans un thread séparé (client gère sa propre boucle asyncio)
     def run_client():
         try:
-            # monkeypatch websockets.connect si on veut ajouter headers
+            app.logger.debug("proxy: run_client thread starting — monkeypatch ws.connect")
             try:
                 client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
-            except Exception:
-                # si ça échoue, on continue quand même sans headers
-                pass
+            except Exception as e:
+                app.logger.warning(f"proxy: failed to monkeypatch client.ws.connect: {e}")
 
+            app.logger.debug(f"proxy: calling client.run(host={ws_url})")
             client.run(host=ws_url)
+            app.logger.debug("proxy: client.run returned (thread ending) — setting finished_thread")
+            finished_thread.set()
         except Exception as e:
-            # capture erreur pour renvoyer au caller et s'assurer que l'attente se réveille
             result["error"] = str(e)
-            result["traceback"] = traceback.format_exc()
+            result["trace"] = traceback.format_exc()
+            app.logger.exception("proxy: exception inside run_client")
             try:
                 finished_thread.set()
             except Exception:
@@ -145,22 +157,29 @@ async def cloudlink_action_async(action_coro, ws_url):
     thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
 
-    # Attendre que finished_thread soit set (en attendant dans l'event-loop asyncio de façon non-bloquante)
+    # Attendre que finished_thread soit set (en attente non-bloquante dans la boucle asyncio)
     loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(None, finished_thread.wait)
+        app.logger.debug(f"proxy: waiting for finished_thread up to {timeout}s")
+        await asyncio.wait_for(loop.run_in_executor(None, finished_thread.wait), timeout=timeout)
+    except asyncio.TimeoutError:
+        app.logger.warning("proxy: timeout waiting for client to finish")
+        # Ne pas tenter d'appeler client.disconnect() ici (on est hors de sa boucle),
+        # on renvoie une erreur pour que la requête HTTP ne bloque pas.
+        return {"status": "error", "username": result.get("username"), "detail": "timeout waiting for disconnect", "trace": result.get("trace")}
     except Exception as e:
-        # fallback: si l'attente échoue, retourne erreur
-        return {"status": "error", "detail": f"waiting for client thread failed: {e}"}
+        app.logger.exception("proxy: error while waiting for finished_thread")
+        return {"status": "error", "username": result.get("username"), "detail": str(e), "trace": result.get("trace")}
 
-    # Retour comme avant
+    # Retour
     if result.get("ok"):
+        app.logger.debug("proxy: action finished OK")
         return {"status": "ok", "username": result.get("username")}
     else:
-        # si erreur remplie, retournons-la pour debug (trace si existante)
+        app.logger.debug("proxy: action finished with error")
         out = {"status": "error", "username": result.get("username"), "detail": result.get("error")}
-        if result.get("traceback"):
-            out["trace"] = result.get("traceback")
+        if result.get("trace"):
+            out["trace"] = result.get("trace")
         return out
 
 
@@ -171,9 +190,11 @@ def cloudlink_action(action_coro):
     """
     raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
     ws_url = sanitize_ws_url(raw)
+    app.logger.info(f"proxy: starting cloudlink_action -> {ws_url}")
     try:
         return asyncio.run(cloudlink_action_async(action_coro, ws_url))
     except Exception as e:
+        app.logger.exception("proxy: exception in cloudlink_action asyncio.run")
         return {"status": "error", "message": "internal_error", "detail": str(e)}
 
 
@@ -182,14 +203,16 @@ def cloudlink_action(action_coro):
 # -------------------------
 @app.route("/global-message", methods=["POST"])
 def route_global_message():
+    app.logger.info("proxy: /global-message called")
     data = request.get_json(force=True, silent=True) or {}
     rooms = data.get("rooms")
     message = data.get("message")
     if not isinstance(rooms, list) or not message:
         return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
 
-    # action_coro : coroutine qui utilisera client.send_packet(...) (SANS await)
     async def action(client, username):
+        app.logger.debug(f"proxy: action send gmsg username={username} rooms={rooms} message={message!r}")
+        # send_packet n'est pas async → ne pas await
         client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
 
     return jsonify(cloudlink_action(action))
@@ -197,6 +220,7 @@ def route_global_message():
 
 @app.route("/private-message", methods=["POST"])
 def route_private_message():
+    app.logger.info("proxy: /private-message called")
     data = request.get_json(force=True, silent=True) or {}
     username_target = data.get("username")
     room = data.get("room")
@@ -205,6 +229,7 @@ def route_private_message():
         return jsonify({"status": "error", "message": "username, room and message required"}), 400
 
     async def action(client, username):
+        app.logger.debug(f"proxy: action send pmsg username={username} -> target={username_target} room={room}")
         client.send_packet({"cmd": "pmsg", "val": message, "id": username_target, "room": room})
 
     return jsonify(cloudlink_action(action))
@@ -212,6 +237,7 @@ def route_private_message():
 
 @app.route("/global-variable", methods=["POST"])
 def route_global_variable():
+    app.logger.info("proxy: /global-variable called")
     data = request.get_json(force=True, silent=True) or {}
     room = data.get("room")
     name = data.get("name")
@@ -220,6 +246,7 @@ def route_global_variable():
         return jsonify({"status": "error", "message": "room and name required"}), 400
 
     async def action(client, username):
+        app.logger.debug(f"proxy: action send gvar name={name} room={room}")
         client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
 
     return jsonify(cloudlink_action(action))
@@ -227,6 +254,7 @@ def route_global_variable():
 
 @app.route("/private-variable", methods=["POST"])
 def route_private_variable():
+    app.logger.info("proxy: /private-variable called")
     data = request.get_json(force=True, silent=True) or {}
     username_target = data.get("username")
     room = data.get("room")
@@ -236,6 +264,7 @@ def route_private_variable():
         return jsonify({"status": "error", "message": "username, room and name required"}), 400
 
     async def action(client, username):
+        app.logger.debug(f"proxy: action send pvar name={name} room={room} -> target={username_target}")
         client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "id": username_target})
 
     return jsonify(cloudlink_action(action))
@@ -274,7 +303,7 @@ def debug_connect_client():
     """
     raw = os.getenv("CLOUDLINK_WS_URL", CLOUDLINK_WS_URL)
     ws_url = sanitize_ws_url(raw)
-    timeout = int(request.args.get("timeout", "8"))
+    timeout = int(request.args.get("timeout", str(DEFAULT_ACTION_TIMEOUT)))
 
     result = {"ok": False, "error": None, "trace": None}
 
@@ -314,6 +343,7 @@ def debug_connect_client():
     thread.join(timeout=timeout)
 
     if thread.is_alive():
+        app.logger.warning("proxy: debug_connect_client timed out")
         return jsonify({"status": "timeout", "detail": f"Client still alive after {timeout}s", "result": result})
     else:
         return jsonify({"status": "finished", "result": result})
@@ -324,4 +354,5 @@ def debug_connect_client():
 # -------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
+    app.logger.info(f"proxy: starting app on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
