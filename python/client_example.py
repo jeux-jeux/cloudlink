@@ -32,9 +32,9 @@ def fetch_cloudlink_ws_url():
         response = requests.get(proxy_auth, timeout=5)
         response.raise_for_status()
         data = response.json()
-        url = data.get("web_socket_url")
+        url = data.get("web_socket_server")
         if not url:
-            print("⚠️ Aucun champ 'web_socket_url' trouvé dans la réponse.")
+            print("⚠️ Aucun champ 'web_socket_server' trouvé dans la réponse.")
             return "Pas de json dans la reponse du proxy authentification !"
         print(f"✅ web_socket_url obtenu : {url}")
         return url
