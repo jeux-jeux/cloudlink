@@ -75,15 +75,20 @@ def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
 
 
 # -------------------------
-# Core CloudLink runner
+# Core CloudLink runner (corrigé pour éviter blocage)
 # -------------------------
 async def cloudlink_action_async(action_coro, ws_url):
     """
     Connecte un client CloudLink, exécute action_coro(client, username) (async),
-    puis se déconnecte proprement. Attend la déconnexion.
+    puis se déconnecte proprement. Attend la déconnexion en utilisant threading.Event
+    pour ne pas mélanger les boucles asyncio.
     """
     client = cl_client()
-    finished = asyncio.Event()
+
+    # Event thread-safe utilisé pour signaler la fin (set depuis le thread du client).
+    finished_thread = threading.Event()
+
+    # Conteneur résultat
     result = {"ok": False, "error": None, "username": None}
 
     @client.on_connect
@@ -96,8 +101,8 @@ async def cloudlink_action_async(action_coro, ws_url):
             # set_username est une coroutine → await obligatoire
             await client.protocol.set_username(username)
 
-            # action_coro est async (défini dans les routes). Important : action_coro
-            # doit appeler client.send_packet(...) **sans await** (car send_packet n'est pas async).
+            # action_coro est async (défini dans les routes).
+            # IMPORTANT: action_coro doit utiliser client.send_packet(...) SANS await.
             await action_coro(client, username)
 
             result["ok"] = True
@@ -105,7 +110,7 @@ async def cloudlink_action_async(action_coro, ws_url):
             result["error"] = str(e)
             traceback.print_exc()
         finally:
-            # tenter de se déconnecter proprement
+            # demande déconnexion propre (await car coroutine)
             try:
                 await client.disconnect()
             except Exception:
@@ -113,45 +118,50 @@ async def cloudlink_action_async(action_coro, ws_url):
 
     @client.on_disconnect
     async def _on_disconnect():
-        finished.set()
+        # Cet async callback est exécuté dans la boucle du client (autre thread).
+        # On peut appeler set() sur threading.Event depuis n'importe quel thread.
+        finished_thread.set()
 
-    # run client.run(host=...) dans un thread séparé (client gère sa boucle)
+    # run client.run(host=...) dans un thread séparé (client gère sa propre boucle asyncio)
     def run_client():
         try:
             # monkeypatch websockets.connect si on veut ajouter headers
             try:
                 client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
             except Exception:
-                # ok si ça échoue; on continue sans les headers
+                # si ça échoue, on continue quand même sans headers
                 pass
 
             client.run(host=ws_url)
         except Exception as e:
-            # capture l'erreur pour renvoyer au caller
+            # capture erreur pour renvoyer au caller et s'assurer que l'attente se réveille
             result["error"] = str(e)
-            traceback.print_exc()
-            # s'assurer que l'attente principale se termine
+            result["traceback"] = traceback.format_exc()
             try:
-                # si on est dans un thread simple, on set l'Event via loop
-                loop = asyncio.get_event_loop()
-                # schedule finished.set() in the client's loop if possible
-                loop.call_soon_threadsafe(finished.set)
+                finished_thread.set()
             except Exception:
-                try:
-                    finished.set()
-                except Exception:
-                    pass
+                pass
 
     thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
 
-    # attendre la déconnexion / erreur
-    await finished.wait()
+    # Attendre que finished_thread soit set (en attendant dans l'event-loop asyncio de façon non-bloquante)
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, finished_thread.wait)
+    except Exception as e:
+        # fallback: si l'attente échoue, retourne erreur
+        return {"status": "error", "detail": f"waiting for client thread failed: {e}"}
 
-    if result["ok"]:
+    # Retour comme avant
+    if result.get("ok"):
         return {"status": "ok", "username": result.get("username")}
     else:
-        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
+        # si erreur remplie, retournons-la pour debug (trace si existante)
+        out = {"status": "error", "username": result.get("username"), "detail": result.get("error")}
+        if result.get("traceback"):
+            out["trace"] = result.get("traceback")
+        return out
 
 
 def cloudlink_action(action_coro):
@@ -180,7 +190,6 @@ def route_global_message():
 
     # action_coro : coroutine qui utilisera client.send_packet(...) (SANS await)
     async def action(client, username):
-        # send_packet n'est pas async → ne pas await
         client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
 
     return jsonify(cloudlink_action(action))
