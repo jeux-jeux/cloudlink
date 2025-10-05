@@ -13,7 +13,10 @@ class clpv4:
         # Origines autorisées pour la connexion
         self.allowed_origins = [
             "tw-editor://.",
-            "https://mon-proxy.example.com"
+            "tw-editor://",
+            "https://cloudlink-manager.onrender.com",
+            "https://cloudlink-manager.onrender.com/",
+            "https://jeux-jeux.github.io"
         ]
 
         # Status codes
