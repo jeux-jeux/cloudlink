@@ -39,7 +39,7 @@ def fetch_cloudlink_ws_url():
     print(f"🔍 Tentative de récupération depuis : {proxy_auth}")
     try:
         # Première tentative : requête GET
-        response = requests.get(proxy_auth, headers={"Origin": "https://cloudlink-manager.onrender.com"}, timeout=6)
+        response = requests.get(proxy_auth, headers={"Origin": "https://cloudlink-manager.onrender.com"}, timeout=15)
         print(f"↩️ Réponse GET code {response.status_code}")
         response.raise_for_status()
 
@@ -60,7 +60,7 @@ def fetch_cloudlink_ws_url():
         # Deuxième tentative : requête POST (si une clé est disponible)
         if auth_key:
             print("🔁 Tentative POST avec clé d'authentification...")
-            response = requests.post(proxy_auth, json={"cle": auth_key}, timeout=6)
+            response = requests.post(proxy_auth, json={"cle": auth_key}, timeout=15)
             print(f"↩️ Réponse POST code {response.status_code}")
             response.raise_for_status()
             data = response.json()
