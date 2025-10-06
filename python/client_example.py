@@ -1,3 +1,4 @@
+# proxy_http.py
 import os
 import asyncio
 import threading
@@ -17,64 +18,101 @@ app.logger.setLevel(logging.DEBUG)
 # -------------------------
 # Configuration
 # -------------------------
-def check_key(data):
-    expected = os.getenv("CLE")
-    received = data.get("cle")
-    if not expected or received != expected:
-        return False
-    return True
-
-
-def fetch_cloudlink_ws_url():
-    try:
-        proxy_auth = os.getenv("PROXY")
-        if not proxy_auth:
-            print("⚠️ Variable d'environnement PROXY manquante.")
-            return None
-        response = requests.get(proxy_auth, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        url = data.get("web_socket_server")
-        if not url:
-            print("⚠️ Aucun champ 'web_socket_server' trouvé dans la réponse.")
-            return None
-        print(f"✅ web_socket_url obtenu : {url}")
-        return url
-    except Exception as e:
-        print(f"⚠️ Impossible de récupérer l'URL depuis le proxy : {e}")
-        return None
-
+# CLE attendue (pour authorisation des routes sending/checking)
+ENV_KEY_NAME = "CLE"
+# URL du service d'auth/discovery (optionnel)
+PROXY_AUTH_URL = os.getenv("PROXY")  # ex: https://proxy-authentification-v3.onrender.com/
+# Fallback si discovery échoue (utile en dev)
+FALLBACK_CLOUDLINK_WS = os.getenv("FALLBACK_CLOUDLINK_WS", "wss://cloudlink-server.onrender.com/")
 
 WS_EXTRA_HEADERS = [
-    ("Origin", "https://cloudlink-manager.onrender.com"),
+    ("Origin", "https://cloudlink-manager.onrender.com/"),
     ("User-Agent", "turbowarp-desktop/1.14.4")
 ]
 
-USERNAME_TIMEOUT = 5
-ACTION_TIMEOUT = 6
-TOTAL_ACTION_TIMEOUT = 10
+USERNAME_TIMEOUT = int(os.getenv("USERNAME_TIMEOUT", "5"))
+ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "6"))
+TOTAL_ACTION_TIMEOUT = int(os.getenv("TOTAL_ACTION_TIMEOUT", "10"))
 
 # -------------------------
 # Helpers
 # -------------------------
-def sanitize_ws_url(url: str) -> str:
-    if not url:
+def check_key(data: dict) -> bool:
+    """Vérifie que le corps JSON contient une clé 'cle' valide."""
+    expected = os.getenv(ENV_KEY_NAME)
+    # Si aucune clé attendue configurée, autorise (pratique pour tests)
+    if not expected:
+        app.logger.debug("No expected CLE configured in env -> skipping check_key (open mode).")
+        return True
+    received = (data or {}).get("cle")
+    ok = (received == expected)
+    if not ok:
+        app.logger.warning("check_key: invalid or missing cle in request body.")
+    return ok
+
+def fetch_cloudlink_ws_url():
+    """
+    Essaie d'interroger PROXY_AUTH_URL pour récupérer le champ web_socket_server.
+    Retourne toujours une chaîne ou FALLBACK_CLOUDLINK_WS en dernier recours.
+    """
+    if PROXY_AUTH_URL:
+        try:
+            app.logger.debug(f"fetch_cloudlink_ws_url: requesting discovery from {PROXY_AUTH_URL}")
+            resp = requests.get(PROXY_AUTH_URL, timeout=5)
+            resp.raise_for_status()
+            j = resp.json()
+            # accepte plusieurs noms de champ possibles
+            url = j.get("web_socket_server") or j.get("websocket") or j.get("web_socket_url") or j.get("url")
+            if url:
+                app.logger.info(f"fetch_cloudlink_ws_url: discovered websocket url: {url}")
+                return url
+            else:
+                app.logger.warning("fetch_cloudlink_ws_url: discovery returned json but no ws field found.")
+        except Exception as e:
+            app.logger.exception(f"fetch_cloudlink_ws_url: discovery request failed: {e}")
+
+    # fallback
+    app.logger.info(f"fetch_cloudlink_ws_url: using fallback CLOUDLINK WS = {FALLBACK_CLOUDLINK_WS}")
+    return FALLBACK_CLOUDLINK_WS
+
+def sanitize_ws_url(url: str) -> str | None:
+    """
+    Nettoie l'URL retournée par discovery.
+    - convertit http(s) -> ws(s)
+    - ajoute scheme si absent (wss par défaut)
+    - normalise slash final
+    Retourne None si l'URL est manifestement invalide.
+    """
+    if not url or not isinstance(url, str):
         return None
     url = url.replace("\\", "").strip()
     if url.startswith("https://"):
         url = "wss://" + url[len("https://"):]
     elif url.startswith("http://"):
         url = "ws://" + url[len("http://"):]
-    if not url.startswith("ws://") and not url.startswith("wss://"):
+    # si pas de scheme, ajouter wss://
+    parts = urlsplit(url)
+    if not parts.scheme:
         url = "wss://" + url.lstrip("/")
-    return url.rstrip("/")
-
+    # n'accepter que ws:// ou wss://
+    if not (url.startswith("ws://") or url.startswith("wss://")):
+        return None
+    # s'assurer qu'il y a au moins un host
+    parsed = urlsplit(url)
+    if not parsed.hostname:
+        return None
+    # normaliser trailing slash
+    return url.rstrip("/") + "/"
 
 def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
+    """
+    Test de handshake websocket exécuté dans une boucle propre.
+    Retourne dict {ok, exc, status_code, response_headers}.
+    """
     async def _attempt():
         out = {"ok": False, "exc": None, "status_code": None, "response_headers": None}
         try:
-            async with websockets.connect(url, extra_headers=extra_headers, open_timeout=timeout):
+            async with websockets.connect(url, extra_headers=extra_headers, open_timeout=timeout) as ws:
                 out["ok"] = True
                 return out
         except Exception as e:
@@ -92,74 +130,112 @@ def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(_attempt())
     finally:
-        loop.close()
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 # -------------------------
-# Core CloudLink runner
+# Core CloudLink runner (avec timeouts & protections)
 # -------------------------
 async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION_TIMEOUT):
+    app.logger.debug(f"cloudlink_action_async: start host={ws_url}")
     client = cl_client()
     finished_thread = threading.Event()
     result = {"ok": False, "error": None, "username": None, "trace": None}
 
     @client.on_connect
     async def _on_connect():
+        app.logger.debug("cloudlink_action_async: on_connect called")
         try:
             username = str(random.randint(100_000_000, 999_999_999))
             result["username"] = username
+            # set_username (avec timeout)
             await asyncio.wait_for(client.protocol.set_username(username), timeout=USERNAME_TIMEOUT)
+            # run action (avec timeout)
             await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
-            await asyncio.sleep(0.2)
+            # small delay to let client flush outgoing messages
+            await asyncio.sleep(0.15)
             result["ok"] = True
+            app.logger.debug("cloudlink_action_async: action completed OK")
         except Exception as e:
             result["error"] = str(e)
             result["trace"] = traceback.format_exc()
+            app.logger.exception("cloudlink_action_async: exception inside on_connect")
         finally:
             try:
                 await client.disconnect()
             except Exception:
-                pass
+                app.logger.exception("cloudlink_action_async: disconnect failed")
 
     @client.on_disconnect
     async def _on_disconnect():
+        app.logger.debug("cloudlink_action_async: on_disconnect -> set finished_thread")
         finished_thread.set()
 
     def run_client():
         try:
-            client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+            # monkeypatch for extra headers
+            try:
+                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+            except Exception as e:
+                app.logger.warning(f"cloudlink_action_async: monkeypatch client.ws.connect failed: {e}")
+            app.logger.debug(f"cloudlink_action_async: client.run(host={ws_url}) starting")
             client.run(host=ws_url)
+            app.logger.debug("cloudlink_action_async: client.run returned")
             finished_thread.set()
         except Exception as e:
             result["error"] = str(e)
             result["trace"] = traceback.format_exc()
-            finished_thread.set()
+            app.logger.exception("cloudlink_action_async: exception in run_client")
+            try:
+                finished_thread.set()
+            except Exception:
+                pass
 
     thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
+
+    # Wait with overall timeout
     loop = asyncio.get_running_loop()
     try:
         await asyncio.wait_for(loop.run_in_executor(None, finished_thread.wait), timeout=total_timeout)
     except asyncio.TimeoutError:
-        return {"status": "error", "username": result.get("username"), "detail": "timeout waiting for disconnect"}
+        app.logger.warning("cloudlink_action_async: timeout waiting for client to finish")
+        out = {"status": "error", "username": result.get("username"), "detail": "timeout waiting for disconnect"}
+        if result.get("trace"):
+            out["trace"] = result.get("trace")
+        return out
 
     if result.get("ok"):
         return {"status": "ok", "username": result.get("username")}
     else:
-        return {"status": "error", "username": result.get("username"), "detail": result.get("error")}
-
+        out = {"status": "error", "username": result.get("username"), "detail": result.get("error")}
+        if result.get("trace"):
+            out["trace"] = result.get("trace")
+        return out
 
 def cloudlink_action(action_coro):
+    """
+    Wrapper sync pour les routes Flask.
+    - découvre l'URL (ou fallback)
+    - la sanitize
+    - renvoie erreur explicite si l'URL est invalide
+    """
     raw = fetch_cloudlink_ws_url()
     ws_url = sanitize_ws_url(raw)
     if not ws_url:
-        return {"status": "error", "message": "invalid_ws_url"}
+        app.logger.error(f"cloudlink_action: invalid websocket url from discovery: raw={raw!r}")
+        return {"status": "error", "message": "invalid_ws_url", "detail": str(raw)}
+    app.logger.info(f"cloudlink_action: using websocket {ws_url}")
     try:
         return asyncio.run(cloudlink_action_async(action_coro, ws_url))
     except Exception as e:
+        app.logger.exception("cloudlink_action: asyncio.run raised")
         return {"status": "error", "message": "internal_error", "detail": str(e)}
 
 # -------------------------
-# Routes sending
+# Routes sending (requièrent 'cle' dans body)
 # -------------------------
 @app.route("/sending/global-message", methods=["POST"])
 def route_global_message():
@@ -172,7 +248,8 @@ def route_global_message():
         return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
 
     async def action(client, username):
-        await client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
+        # send_packet est synchrone dans cette lib => pas d'await
+        client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
 
     return jsonify(cloudlink_action(action))
 
@@ -189,7 +266,7 @@ def route_private_message():
         return jsonify({"status": "error", "message": "username, room and message required"}), 400
 
     async def action(client, username):
-        await client.send_packet({"cmd": "pmsg", "val": message, "id": username_target, "room": room})
+        client.send_packet({"cmd": "pmsg", "val": message, "id": username_target, "room": room})
 
     return jsonify(cloudlink_action(action))
 
@@ -206,7 +283,7 @@ def route_global_variable():
         return jsonify({"status": "error", "message": "room and name required"}), 400
 
     async def action(client, username):
-        await client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
+        client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
 
     return jsonify(cloudlink_action(action))
 
@@ -224,7 +301,7 @@ def route_private_variable():
         return jsonify({"status": "error", "message": "username, room and name required"}), 400
 
     async def action(client, username):
-        await client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "id": username_target})
+        client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "id": username_target})
 
     return jsonify(cloudlink_action(action))
 
@@ -244,13 +321,12 @@ def route_kick_client():
         payload = {"cmd": "kick", "room": room, "targets": targets}
         if secret:
             payload["secret"] = secret
-        await client.send_packet(payload)
+        client.send_packet(payload)
 
     return jsonify(cloudlink_action(action))
 
-
 # -------------------------
-# Health & Debug
+# Health & Debug (some routes accept key, some not)
 # -------------------------
 @app.route("/checking/health", methods=["POST"])
 def health():
@@ -263,12 +339,14 @@ def health():
 @app.route("/checking/handshake", methods=["POST"])
 def debug_handshake():
     data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
     raw = fetch_cloudlink_ws_url()
     url = sanitize_ws_url(raw)
     tests = {
-        "default": ws_handshake_test_sync(url),
-        "origin": ws_handshake_test_sync(url, extra_headers=[("Origin", "https://cloudlink-manager.onrender.com")]),
-        "origin+ua": ws_handshake_test_sync(url, extra_headers=WS_EXTRA_HEADERS)
+        "default": ws_handshake_test_sync(url, extra_headers=None) if url else {"ok": False, "exc": "invalid url"},
+        "origin": ws_handshake_test_sync(url, extra_headers=[("Origin", "https://cloudlink-manager.onrender.com/")]) if url else {"ok": False, "exc": "invalid url"},
+        "origin+ua": ws_handshake_test_sync(url, extra_headers=WS_EXTRA_HEADERS) if url else {"ok": False, "exc": "invalid url"}
     }
     return jsonify({"ws_url": url, "tests": tests})
 
@@ -276,8 +354,12 @@ def debug_handshake():
 @app.route("/checking/connect-client", methods=["POST"])
 def debug_connect_client():
     data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
     raw = fetch_cloudlink_ws_url()
     ws_url = sanitize_ws_url(raw)
+    if not ws_url:
+        return jsonify({"status": "error", "message": "invalid_ws_url", "detail": str(raw)}), 500
     timeout = int(request.args.get("timeout", str(TOTAL_ACTION_TIMEOUT)))
 
     result = {"ok": False, "error": None, "trace": None}
@@ -318,15 +400,19 @@ def debug_connect_client():
     thread.join(timeout=timeout)
 
     if thread.is_alive():
+        app.logger.warning("debug_connect_client: client thread timed out")
         return jsonify({"status": "timeout", "detail": f"Client still alive after {timeout}s", "result": result})
     else:
         return jsonify({"status": "finished", "result": result})
 
+# -------------------------
+# Entrée principale
+# -------------------------
+@app.route("/", methods=["GET"])
+def index():
+    return "Proxy HTTP Cloudlink en ligne ✅"
 
-# -------------------------
-# Run
-# -------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", "5000"))
     app.logger.info(f"proxy: starting app on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port)
