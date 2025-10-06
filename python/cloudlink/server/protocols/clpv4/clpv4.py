@@ -29,9 +29,17 @@ class clpv4:
             env_list = []
 
         # Flag : accepter les connexions sans header Origin (utile pour clients non-navigateur)
-        ALLOW_NO_ORIGIN = True
+        # On peut aussi exposer via env var si besoin : CLOUDLINK_ALLOW_NO_ORIGIN=0/1
+        allow_no_origin_env = os.getenv("CLOUDLINK_ALLOW_NO_ORIGIN", None)
+        if allow_no_origin_env is not None:
+            try:
+                ALLOW_NO_ORIGIN = bool(int(allow_no_origin_env))
+            except Exception:
+                ALLOW_NO_ORIGIN = True
+        else:
+            ALLOW_NO_ORIGIN = True
 
-        # Construire liste finale d'origines autorisées
+        # Construire liste finale d'origines autorisées (dédupliquer en conservant ordre)
         self.allowed_origins = list(dict.fromkeys(default_allowed + env_list))
 
         # Status codes
@@ -69,6 +77,7 @@ class clpv4:
                 return client.request_headers.get(self.real_ip_header)
             if type(client.remote_address) == tuple:
                 return str(client.remote_address[0])
+            return None
         self.get_client_ip = get_client_ip
 
         # Validation des messages
@@ -76,6 +85,7 @@ class clpv4:
             validator = server.validator(schema, allow_unknown=allow_unknown)
             if validator.validate(message):
                 return True
+            # send_statuscode est défini plus bas — ok d'utiliser le nom ici
             send_statuscode(client, statuscodes.syntax, details=dict(validator.errors))
             return False
         self.valid = valid
@@ -195,7 +205,10 @@ class clpv4:
                     return
                 else:
                     server.logger.warning(f"Client {getattr(client, 'snowflake', '?')} rejected: missing Origin header.")
-                    await client.disconnect(code=4001, reason="Origin required")
+                    try:
+                        await client.disconnect(code=4001, reason="Origin required")
+                    except Exception:
+                        server.logger.exception("Failed to disconnect client after missing origin")
                     return
 
             # Check against allowed list
@@ -214,7 +227,6 @@ class clpv4:
                 try:
                     await client.disconnect(code=4001, reason="Origin not allowed")
                 except Exception:
-                    # si disconnect asynchrone échoue, forcer suppression (log)
                     server.logger.exception("Failed to disconnect client after origin rejection")
                 return
             else:
@@ -295,7 +307,11 @@ class clpv4:
                 clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
                 clients = server.copy(clients)
                 if "listener" in message:
-                    clients.remove(client)
+                    # remove origin from broadcast
+                    try:
+                        clients.remove(client)
+                    except ValueError:
+                        pass
                     tmp_message = {"cmd": "gmsg", "val": message["val"]}
                     server.send_packet(clients, tmp_message)
                     tmp_message = {
@@ -382,7 +398,10 @@ class clpv4:
                     "rooms": room
                 }
                 if "listener" in message:
-                    clients.remove(client)
+                    try:
+                        clients.remove(client)
+                    except ValueError:
+                        pass
                     server.send_packet(clients, tmp_message)
                     tmp_message["listener"] = message["listener"]
                     server.send_packet(client, tmp_message)
@@ -456,7 +475,10 @@ class clpv4:
             server.rooms_manager.subscribe(client, "default")
             clients = await server.rooms_manager.get_all_in_rooms("default", cl4_protocol)
             clients = server.copy(clients)
-            clients.remove(client)
+            try:
+                clients.remove(client)
+            except ValueError:
+                pass
             server.send_packet(clients, {
                 "cmd": "ulist",
                 "mode": "add",
@@ -501,7 +523,10 @@ class clpv4:
                 server.rooms_manager.subscribe(client, room)
                 clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
                 clients = server.copy(clients)
-                clients.remove(client)
+                try:
+                    clients.remove(client)
+                except ValueError:
+                    pass
                 server.send_packet(clients, {
                     "cmd": "ulist",
                     "mode": "add",
@@ -543,7 +568,10 @@ class clpv4:
                 server.rooms_manager.subscribe(client, "default")
                 clients = await server.rooms_manager.get_all_in_rooms("default", cl4_protocol)
                 clients = server.copy(clients)
-                clients.remove(client)
+                try:
+                    clients.remove(client)
+                except ValueError:
+                    pass
                 server.send_packet(clients, {
                     "cmd": "ulist",
                     "mode": "add",
