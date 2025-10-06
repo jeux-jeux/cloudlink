@@ -177,39 +177,35 @@ class clpv4:
         @server.on_connect
         async def validate_origin(client):
             origin = client.request_headers.get("Origin")
-            origin_norm = _normalize_origin(origin)
-
-            # Si aucune Origin → autoriser selon variable
-            if origin_norm is None:
+            if not origin:
                 if ALLOW_NO_ORIGIN:
-                    server.logger.info(f"[ACCEPT] Client {getattr(client, 'snowflake', '?')} sans Origin → accepté (ALLOW_NO_ORIGIN=True)")
+                    server.logger.info(f"[ACCEPT] Aucune Origin reçue → connexion autorisée (ALLOW_NO_ORIGIN=True)")
                     return
                 else:
-                    server.logger.warning(f"[REFUS] Client {getattr(client, 'snowflake', '?')} sans Origin → rejeté")
+                    server.logger.warning(f"[REFUS] Origin manquante")
                     try:
                         await client.disconnect(code=4001, reason="Origin required")
                     except Exception:
                         pass
                     return
 
-            # Vérifie l'origine
+            # 🔧 Correction : normaliser pour ignorer slash final
+            origin_norm = origin.strip().lower().rstrip("/")
+
             allowed = False
-            for kind, pattern in normalized_allowed:
-                if kind == "exact" and origin_norm == pattern:
-                    allowed = True
-                    break
-                elif kind == "prefix" and origin_norm.startswith(pattern):
+            for allowed_origin in self.allowed_origins:
+                if origin_norm == allowed_origin.strip().lower().rstrip("/"):
                     allowed = True
                     break
 
-            if not allowed:
-                server.logger.warning(f"[REFUS] Origin '{origin}' non autorisée. Autorisées : {self.allowed_origins}")
+            if allowed:
+                server.logger.info(f"[ACCEPT] Origin autorisée : {origin}")
+            else:
+                server.logger.warning(f"[REFUS] Origin refusée : {origin} (autorisées: {self.allowed_origins})")
                 try:
                     await client.disconnect(code=4001, reason="Origin not allowed")
                 except Exception:
                     pass
-            else:
-                server.logger.info(f"[ACCEPT] Origin acceptée : '{origin}'")
 
         # -------------------------
         # ÉVÉNEMENTS & COMMANDES
