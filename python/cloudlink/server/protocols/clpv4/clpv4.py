@@ -270,265 +270,137 @@ class clpv4:
 
         @server.on_command(cmd="gmsg", schema=cl4_protocol)
         async def on_gmsg(client, message):
-            # Validate schema
-            if not valid(client, message, cl4_protocol.gmsg):
-                return
+                # Validate schema
+                if not valid(client, message, cl4_protocol.gmsg):
+                        return
 
-            # Gather rooms to send to
-            rooms = gather_rooms(client, message)
+                # Gather rooms to send to
+                rooms = gather_rooms(client, message)
 
-            # Broadcast to all subscribed rooms
-            async for room in server.async_iterable(rooms):
+                # Si aucune room n’est donnée, utiliser celle(s) du client
+                if not rooms:
+                        rooms = client.rooms
 
-                # Prevent accessing rooms not joined
-                if room not in client.rooms:
-                    send_statuscode(
-                        client,
-                        statuscodes.room_not_joined,
-                        details=f'Attempted to access room {room} while not joined.',
-                        message=message
-                    )
+                # Broadcast to all subscribed rooms
+                async for room in server.async_iterable(rooms):
 
-                    # Stop gmsg command
-                    return
+                        # ⚠️ Ignorer la room "default"
+                        if room == "default":
+                                server.logger.warning(f"[GMSG] Ignoré: message vers 'default' depuis {client.snowflake}")
+                                continue
 
-                clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
-                clients = server.copy(clients)
+                        # Empêcher accès à une room non jointe
+                        if room not in client.rooms:
+                                send_statuscode(
+                                        client,
+                                        statuscodes.room_not_joined,
+                                        details=f'Attempted to access room {room} while not joined.',
+                                        message=message
+                                )
+                                return
 
-                # Attach listener (if present) and broadcast
-                if "listener" in message:
+                        clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
+                        clients = server.copy(clients)
 
-                    # Remove originating client from broadcast
-                    clients.remove(client)
+                        tmp_message = {
+                                "cmd": "gmsg",
+                                "val": message["val"],
+                                "rooms": room
+                        }
 
-                    # Define the message to broadcast
-                    tmp_message = {
-                        "cmd": "gmsg",
-                        "val": message["val"]
-                    }
+                        # Attach listener (if present)
+                        if "listener" in message:
+                                clients.remove(client)
+                                server.send_packet(clients, tmp_message)
+                                tmp_message["listener"] = message["listener"]
+                                server.send_packet(client, tmp_message)
+                        else:
+                                server.send_packet(clients, tmp_message)
 
-                    # Broadcast message
-                    server.send_packet(clients, tmp_message)
-
-                    # Define the message to send
-                    tmp_message = {
-                        "cmd": "gmsg",
-                        "val": message["val"],
-                        "listener": message["listener"],
-                        "rooms": room
-                    }
-
-                    # Unicast message
-                    server.send_packet(client, tmp_message)
-                else:
-                    # Broadcast message
-                    server.send_packet(clients, {
-                        "cmd": "gmsg",
-                        "val": message["val"],
-                        "rooms": room
-                    })
 
         @server.on_command(cmd="pmsg", schema=cl4_protocol)
         async def on_pmsg(client, message):
-            # Validate schema
-            if not valid(client, message, cl4_protocol.pmsg):
-                return
+                if not valid(client, message, cl4_protocol.pmsg):
+                        return
+                if not require_username_set(client, message):
+                        return
 
-            # Require sending client to have set their username
-            if not require_username_set(client, message):
-                return
+                rooms = gather_rooms(client, message)
+                if not rooms:
+                        rooms = client.rooms
 
-            # Gather rooms
-            rooms = gather_rooms(client, message)
+                any_results_found = False
+                async for room in server.async_iterable(rooms):
 
-            # Search and send to all specified clients in rooms
-            any_results_found = False
-            async for room in server.async_iterable(rooms):
+                        if room == "default":
+                                server.logger.warning(f"[PMSG] Ignoré: message vers 'default' depuis {client.snowflake}")
+                                continue
 
-                # Prevent accessing rooms not joined
-                if room not in client.rooms:
-                    send_statuscode(
-                        client,
-                        statuscodes.room_not_joined,
-                        details=f'Attempted to access room {room} while not joined.',
-                        message=message
-                    )
+                        if room not in client.rooms:
+                                send_statuscode(
+                                        client,
+                                        statuscodes.room_not_joined,
+                                        details=f'Attempted to access room {room} while not joined.',
+                                        message=message
+                                )
+                                return
 
-                    # Stop pmsg command
-                    return
+                        clients = await server.rooms_manager.get_specific_in_room(room, cl4_protocol, message['id'])
+                        if not len(clients):
+                                continue
 
-                clients = await server.rooms_manager.get_specific_in_room(room, cl4_protocol, message['id'])
+                        any_results_found = True
+                        tmp_message = {
+                                "cmd": "pmsg",
+                                "val": message["val"],
+                                "origin": generate_user_object(client),
+                                "rooms": room
+                        }
+                        server.send_packet(clients, tmp_message)
 
-                # Continue if no results are found
-                if not len(clients):
-                    continue
-
-                # Mark the full search OK
                 if not any_results_found:
-                    any_results_found = True
+                        send_statuscode(
+                                client,
+                                statuscodes.id_not_found,
+                                details=f'No matches found: {message["id"]}',
+                                message=message
+                        )
+                        return
 
-                # Warn if multiple matches are found (mainly for username queries)
-                if self.warn_if_multiple_username_matches and len(clients) >> 1:
-                    send_statuscode(
-                        client,
-                        statuscodes.id_not_specific,
-                        details=f'Multiple matches found for {message["id"]}, found {len(clients)} matches. Please use Snowflakes, UUIDs, or client objects instead.',
-                        message=message
-                    )
+                send_statuscode(client, statuscodes.ok, message=message)
 
-                    # Stop pmsg command
-                    return
-
-                # Send message
-                tmp_message = {
-                    "cmd": "pmsg",
-                    "val": message["val"],
-                    "origin": generate_user_object(client),
-                    "rooms": room
-                }
-                server.send_packet(clients, tmp_message)
-
-            if not any_results_found:
-                send_statuscode(
-                    client,
-                    statuscodes.id_not_found,
-                    details=f'No matches found: {message["id"]}',
-                    message=message
-                )
-
-                # End pmsg command handler
-                return
-
-            # Results were found and sent successfully
-            send_statuscode(
-                client,
-                statuscodes.ok,
-                message=message
-            )
 
         @server.on_command(cmd="gvar", schema=cl4_protocol)
         async def on_gvar(client, message):
-            # Validate schema
-            if not valid(client, message, cl4_protocol.gvar):
-                return
+                if not valid(client, message, cl4_protocol.gvar):
+                        return
 
-            # Gather rooms to send to
-            rooms = gather_rooms(client, message)
+                rooms = gather_rooms(client, message)
+                if not rooms:
+                        rooms = client.rooms
 
-            # Broadcast to all subscribed rooms
-            async for room in server.async_iterable(rooms):
+                async for room in server.async_iterable(rooms):
 
-                # Prevent accessing rooms not joined
-                if room not in client.rooms:
-                    send_statuscode(
-                        client,
-                        statuscodes.room_not_joined,
-                        details=f'Attempted to access room {room} while not joined.',
-                        message=message
-                    )
+                        if room == "default":
+                                server.logger.warning(f"[GVAR] Ignoré: variable vers 'default' depuis {client.snowflake}")
+                                continue
 
-                    # Stop gvar command
-                    return
+                        if room not in client.rooms:
+                                send_statuscode(
+                                        client,
+                                        statuscodes.room_not_joined,
+                                        details=f'Attempted to access room {room} while not joined.',
+                                        message=message
+                                )
+                                return
 
-                clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
-                clients = server.copy(clients)
+                        clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
+                        clients = server.copy(clients)
 
-                # Define the message to send
-                tmp_message = {
-                    "cmd": "gvar",
-                    "name": message["name"],
-                    "val": message["val"],
-                    "rooms": room
-                }
+                        tmp_message = {
+                                "cmd": "gvar",
+                                "name": messa
 
-                # Attach listener (if present) and broadcast
-                if "listener" in message:
-                    clients.remove(client)
-                    server.send_packet(clients, tmp_message)
-                    tmp_message["listener"] = message["listener"]
-                    server.send_packet(client, tmp_message)
-                else:
-                    server.send_packet(clients, tmp_message)
-
-        @server.on_command(cmd="pvar", schema=cl4_protocol)
-        async def on_pvar(client, message):
-            # Validate schema
-            if not valid(client, message, cl4_protocol.pvar):
-                return
-
-            # Require sending client to have set their username
-            if not require_username_set(client, message):
-                return
-
-            # Gather rooms
-            rooms = gather_rooms(client, message)
-
-            # Search and send to all specified clients in rooms
-            any_results_found = False
-            async for room in server.async_iterable(rooms):
-
-                # Prevent accessing rooms not joined
-                if room not in client.rooms:
-                    send_statuscode(
-                        client,
-                        statuscodes.room_not_joined,
-                        details=f'Attempted to access room {room} while not joined.',
-                        message=message
-                    )
-
-                    # Stop pvar command
-                    return
-
-                clients = await server.rooms_manager.get_specific_in_room(room, cl4_protocol, message['id'])
-                clients = server.copy(clients)
-
-                # Continue if no results are found
-                if not len(clients):
-                    continue
-
-                # Mark the full search OK
-                if not any_results_found:
-                    any_results_found = True
-
-                # Warn if multiple matches are found (mainly for username queries)
-                if self.warn_if_multiple_username_matches and len(clients) >> 1:
-                    send_statuscode(
-                        client,
-                        statuscodes.id_not_specific,
-                        details=f'Multiple matches found for {message["id"]}, found {len(clients)} matches. Please use Snowflakes, UUIDs, or client objects instead.',
-                        message=message
-                    )
-
-                    # Stop pvar command
-                    return
-
-                # Send message
-                tmp_message = {
-                    "cmd": "pvar",
-                    "name": message["name"],
-                    "val": message["val"],
-                    "origin": generate_user_object(client),
-                    "rooms": room
-                }
-                server.send_packet(clients, tmp_message)
-
-            if not any_results_found:
-                send_statuscode(
-                    client,
-                    statuscodes.id_not_found,
-                    details=f'No matches found: {message["id"]}',
-                    message=message
-                )
-
-                # End pmsg command handler
-                return
-
-            # Results were found and sent successfully
-            send_statuscode(
-                client,
-                statuscodes.ok,
-                message=message
-            )
 
         @server.on_command(cmd="setid", schema=cl4_protocol)
         async def on_setid(client, message):
