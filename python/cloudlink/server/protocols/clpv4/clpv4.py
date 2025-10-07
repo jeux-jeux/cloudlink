@@ -38,6 +38,7 @@ class clpv4:
         else:
             ALLOW_NO_ORIGIN = True
 
+        # Liste finale sans doublons
         self.allowed_origins = list(dict.fromkeys(default_allowed + env_list))
 
         # -------------------------
@@ -176,28 +177,14 @@ class clpv4:
             else:
                 normalized_allowed.append(("exact", norm))
 
-        @server.on_connect
-        async def on_connect(client):
-            origin = _normalize_origin(client.request_headers.get("Origin", None))
-            if origin is None and not ALLOW_NO_ORIGIN:
-                await client.close()
-                return
-            if origin:
-                matched = any(
-                    (mode == "exact" and origin == value) or
-                    (mode == "prefix" and origin.startswith(value))
-                    for mode, value in normalized_allowed
-                )
-                if not matched and "*" not in [v for _, v in normalized_allowed]:
-                    await client.close()
-                    return
-
-            server.logger.info(f"Client connecté : {client.id}")
-            await notify_handshake(client)
-
         # -------------------------
         # ÉVÉNEMENTS & COMMANDES
         # -------------------------
+        @server.on_connect
+        async def on_connect(client):
+            server.logger.info(f"Client connecté : {client.id}")
+            await client.send("server", {"status": "connected"})
+
         @server.on_exception(exception_type=server.exceptions.JSONError, schema=cl4_protocol)
         async def json_exception(client, details):
             send_statuscode(client, statuscodes.json_error, details=f"A JSON error was raised: {details}")
@@ -243,32 +230,19 @@ class clpv4:
             rooms = gather_rooms(client, message)
             async for room in server.async_iterable(rooms):
                 if room not in client.rooms:
-                    send_statuscode(client, statuscodes.room_not_joined,
-                                    details=f'Attempted to access room {room} while not joined.',
-                                    message=message)
+                    send_statuscode(client, statuscodes.room_not_joined, details=f'Attempted to access room {room} while not joined.', message=message)
                     return
                 clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
                 clients = server.copy(clients)
                 if "listener" in message:
-                    try:
-                        clients.remove(client)
-                    except ValueError:
-                        pass
+                    try: clients.remove(client)
+                    except ValueError: pass
                     tmp_message = {"cmd": "gmsg", "val": message["val"]}
                     server.send_packet(clients, tmp_message)
-                    tmp_message = {
-                        "cmd": "gmsg",
-                        "val": message["val"],
-                        "listener": message["listener"],
-                        "rooms": room
-                    }
+                    tmp_message = {"cmd": "gmsg", "val": message["val"], "listener": message["listener"], "rooms": room}
                     server.send_packet(client, tmp_message)
                 else:
-                    server.send_packet(clients, {
-                        "cmd": "gmsg",
-                        "val": message["val"],
-                        "rooms": room
-                    })
+                    server.send_packet(clients, {"cmd": "gmsg", "val": message["val"], "rooms": room})
 
         @server.on_command(cmd="pmsg", schema=cl4_protocol)
         async def on_pmsg(client, message):
