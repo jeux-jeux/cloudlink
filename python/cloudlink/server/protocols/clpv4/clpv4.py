@@ -178,9 +178,9 @@ class clpv4:
         # Validation robuste de l'origine
         # -------------------------
         @server.on_connect
-        async def validate_origin(client):
-            server.logger.info("Validate_origin bypass — accept all")
-            return
+        async def on_connect(client):
+            server.logger.info(f"Client connecté : {client.id}")
+            await client.send("server", {"status": "connected"})
 
         # -------------------------
         # ÉVÉNEMENTS & COMMANDES
