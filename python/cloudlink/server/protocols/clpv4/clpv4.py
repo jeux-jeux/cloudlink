@@ -179,22 +179,8 @@ class clpv4:
         # -------------------------
         @server.on_connect
         async def validate_origin(client):
-                origin = client.request_headers.get("Origin")
-
-                if not origin:
-                        # Autoriser si flag
-                        return
-
-                origin_norm = origin.strip().lower().rstrip("/")
-
-                # Compare contre versions normalisées des origins autorisés
-                for allowed in self.allowed_origins:
-                        if origin_norm == allowed.strip().lower().rstrip("/"):
-                                # Match → autorisé
-                                return
-
-                # Refus sinon
-                await client.disconnect(code=4001, reason="Origin not allowed")
+            server.logger.info("Validate_origin bypass — accept all")
+            return
 
         # -------------------------
         # ÉVÉNEMENTS & COMMANDES
