@@ -113,6 +113,13 @@ if __name__ == "__main__":
     host = "0.0.0.0"  # Écoute toutes les interfaces
     port_env = os.getenv("CLOUDLINK_PORT")
     port = int(port_env) if port_env else 3000
-
+    server.allowed_origins = [
+		"tw-editor://.",
+		"tw-editor://",
+		"https://cloudlink-manager.onrender.com",
+		"https://cloudlink-manager.onrender.com/",
+		"https://jeux-jeux.github.io",
+		"*"
+	]
     srv.logger.info(f"Démarrage CloudLink WS sur {host}:{port}")
     srv.run(ip=host, port=port)
