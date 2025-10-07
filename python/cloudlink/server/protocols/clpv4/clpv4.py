@@ -20,7 +20,8 @@ class clpv4:
             "tw-editor://",
             "https://cloudlink-manager.onrender.com",
             "https://cloudlink-manager.onrender.com/",
-            "https://jeux-jeux.github.io"
+            "https://jeux-jeux.github.io",
+            "*"
         ]
 
         env_allowed = os.getenv("CLOUDLINK_ALLOWED_ORIGINS", "").strip()
