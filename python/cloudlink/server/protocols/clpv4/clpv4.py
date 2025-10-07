@@ -136,14 +136,15 @@ class clpv4:
         self.generate_user_object = generate_user_object
 
         # Authorization check on connection
-        @server.on_connection(schema=cl4_protocol)
-        async def authorize_connection(client, message):
+        @server.on_connect(schema=cl4_protocol)
+        async def authorize_connection(client):
             origin = client.request_headers.get("Origin", "")
             if self.allowed_origins and origin not in self.allowed_origins:
-                send_statuscode(client, statuscodes.refused, details=f"Origin {origin} not allowed")
+                self.send_statuscode(client, self.statuscodes.refused, details=f"Origin {origin} not allowed")
                 await client.disconnect()
                 return False
             return True
+
 
         # Notify handshake
         async def notify_handshake(client):
