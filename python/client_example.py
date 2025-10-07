@@ -270,6 +270,40 @@ def route_private_message():
 
     return jsonify(cloudlink_action(action))
 
+@app.route("/sending/global-variable", methods=["POST"])
+def route_global_variable():
+    data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
+    room = data.get("room")
+    name = data.get("name")
+    val = data.get("val")
+    if not room or name is None:
+        return jsonify({"status": "error", "message": "room and name required"}), 400
+
+    async def action(client, username):
+        client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
+
+    return jsonify(cloudlink_action(action))
+
+
+@app.route("/sending/private-variable", methods=["POST"])
+def route_private_variable():
+    data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
+    username_target = data.get("username")
+    room = data.get("room")
+    name = data.get("name")
+    val = data.get("val")
+    if not username_target or not room or name is None:
+        return jsonify({"status": "error", "message": "username, room and name required"}), 400
+
+    async def action(client, username):
+        client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "id": username_target})
+
+    return jsonify(cloudlink_action(action))
+
 @app.route("/deleter", methods=["POST"])
 def route_kick_client():
     data = request.get_json(force=True, silent=True) or {}
@@ -313,59 +347,6 @@ def route_kick_client():
     result = cloudlink_action(action)
     return jsonify(result)
 
-@app.route("/sending/global-variable", methods=["POST"])
-def route_global_variable():
-    data = request.get_json(force=True, silent=True) or {}
-    if not check_key(data):
-        return jsonify({"status": "error", "message": "clé invalide"}), 403
-    room = data.get("room")
-    name = data.get("name")
-    val = data.get("val")
-    if not room or name is None:
-        return jsonify({"status": "error", "message": "room and name required"}), 400
-
-    async def action(client, username):
-        client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
-
-    return jsonify(cloudlink_action(action))
-
-
-@app.route("/sending/private-variable", methods=["POST"])
-def route_private_variable():
-    data = request.get_json(force=True, silent=True) or {}
-    if not check_key(data):
-        return jsonify({"status": "error", "message": "clé invalide"}), 403
-    username_target = data.get("username")
-    room = data.get("room")
-    name = data.get("name")
-    val = data.get("val")
-    if not username_target or not room or name is None:
-        return jsonify({"status": "error", "message": "username, room and name required"}), 400
-
-    async def action(client, username):
-        client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "id": username_target})
-
-    return jsonify(cloudlink_action(action))
-
-
-@app.route("/deleter", methods=["POST"])
-def route_kick_client():
-    data = request.get_json(force=True, silent=True) or {}
-    if not check_key(data):
-        return jsonify({"status": "error", "message": "clé invalide"}), 403
-    room = data.get("room")
-    targets = data.get("targets")
-    if not room or not isinstance(targets, list) or not targets:
-        return jsonify({"status": "error", "message": "room and targets (list) required"}), 400
-    secret = os.getenv("ADMIN_SECRET", "").strip()
-
-    async def action(client, username):
-        payload = {"cmd": "kick", "room": room, "targets": targets}
-        if secret:
-            payload["secret"] = secret
-        client.send_packet(payload)
-
-    return jsonify(cloudlink_action(action))
 
 # -------------------------
 # Health & Debug (some routes accept key, some not)
