@@ -527,7 +527,10 @@ class server:
             "tw-editor://.",
             "https://jeux-jeux.github.io",
             "http://localhost:3000",
-            "https://example.com"
+            "https://cloudlink-manager.onrender.com",
+            "https://cloudlink-manager.onrender.com/",
+            "https://turbowarp.org/",
+            "https://turbowarp.org",
         }
         # Get origin from request headers if available
         origin = None
