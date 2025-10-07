@@ -38,7 +38,6 @@ class clpv4:
         else:
             ALLOW_NO_ORIGIN = True
 
-        # Liste finale sans doublons
         self.allowed_origins = list(dict.fromkeys(default_allowed + env_list))
 
         # -------------------------
@@ -157,7 +156,7 @@ class clpv4:
                 })
 
         # -------------------------
-        # VALIDATION ORIGIN (FIX)
+        # VALIDATION ORIGIN
         # -------------------------
         def _normalize_origin(o):
             if not o:
@@ -177,13 +176,24 @@ class clpv4:
             else:
                 normalized_allowed.append(("exact", norm))
 
-        # -------------------------
-        # Validation robuste de l'origine
-        # -------------------------
         @server.on_connect
         async def on_connect(client):
+            origin = _normalize_origin(client.request_headers.get("Origin", None))
+            if origin is None and not ALLOW_NO_ORIGIN:
+                await client.close()
+                return
+            if origin:
+                matched = any(
+                    (mode == "exact" and origin == value) or
+                    (mode == "prefix" and origin.startswith(value))
+                    for mode, value in normalized_allowed
+                )
+                if not matched and "*" not in [v for _, v in normalized_allowed]:
+                    await client.close()
+                    return
+
             server.logger.info(f"Client connecté : {client.id}")
-            await client.send("server", {"status": "connected"})
+            await notify_handshake(client)
 
         # -------------------------
         # ÉVÉNEMENTS & COMMANDES
@@ -215,7 +225,7 @@ class clpv4:
                     })
 
         # -------------------------
-        # COMMANDES (identiques à ton code)
+        # COMMANDES
         # -------------------------
         @server.on_command(cmd="handshake", schema=cl4_protocol)
         async def on_handshake(client, message):
@@ -226,9 +236,6 @@ class clpv4:
         async def on_ping(client, message):
             send_statuscode(client, statuscodes.ok, message=message)
 
-        # Toutes les autres commandes (gmsg, pmsg, gvar, pvar, setid, link, unlink, direct)
-        # restent inchangées — tu peux garder celles que tu as déjà, elles fonctionnent parfaitement.
-
         @server.on_command(cmd="gmsg", schema=cl4_protocol)
         async def on_gmsg(client, message):
             if not valid(client, message, cl4_protocol.gmsg):
@@ -236,17 +243,13 @@ class clpv4:
             rooms = gather_rooms(client, message)
             async for room in server.async_iterable(rooms):
                 if room not in client.rooms:
-                    send_statuscode(
-                        client,
-                        statuscodes.room_not_joined,
-                        details=f'Attempted to access room {room} while not joined.',
-                        message=message
-                    )
+                    send_statuscode(client, statuscodes.room_not_joined,
+                                    details=f'Attempted to access room {room} while not joined.',
+                                    message=message)
                     return
                 clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
                 clients = server.copy(clients)
                 if "listener" in message:
-                    # remove origin from broadcast
                     try:
                         clients.remove(client)
                     except ValueError:
@@ -277,25 +280,20 @@ class clpv4:
             any_results_found = False
             async for room in server.async_iterable(rooms):
                 if room not in client.rooms:
-                    send_statuscode(
-                        client,
-                        statuscodes.room_not_joined,
-                        details=f'Attempted to access room {room} while not joined.',
-                        message=message
-                    )
+                    send_statuscode(client, statuscodes.room_not_joined,
+                                    details=f'Attempted to access room {room} while not joined.',
+                                    message=message)
                     return
                 clients = await server.rooms_manager.get_specific_in_room(room, cl4_protocol, message['id'])
+                clients = server.copy(clients)
                 if not len(clients):
                     continue
                 if not any_results_found:
                     any_results_found = True
-                if self.warn_if_multiple_username_matches and len(clients) >> 1:
-                    send_statuscode(
-                        client,
-                        statuscodes.id_not_specific,
-                        details=f'Multiple matches found for {message["id"]}, found {len(clients)} matches. Please use Snowflakes, UUIDs, or client objects instead.',
-                        message=message
-                    )
+                if self.warn_if_multiple_username_matches and len(clients) > 1:
+                    send_statuscode(client, statuscodes.id_not_specific,
+                                    details=f'Multiple matches found for {message["id"]}, found {len(clients)} matches. Please use Snowflakes, UUIDs, or client objects instead.',
+                                    message=message)
                     return
                 tmp_message = {
                     "cmd": "pmsg",
@@ -305,12 +303,9 @@ class clpv4:
                 }
                 server.send_packet(clients, tmp_message)
             if not any_results_found:
-                send_statuscode(
-                    client,
-                    statuscodes.id_not_found,
-                    details=f'No matches found: {message["id"]}',
-                    message=message
-                )
+                send_statuscode(client, statuscodes.id_not_found,
+                                details=f'No matches found: {message["id"]}',
+                                message=message)
                 return
             send_statuscode(client, statuscodes.ok, message=message)
 
@@ -321,12 +316,9 @@ class clpv4:
             rooms = gather_rooms(client, message)
             async for room in server.async_iterable(rooms):
                 if room not in client.rooms:
-                    send_statuscode(
-                        client,
-                        statuscodes.room_not_joined,
-                        details=f'Attempted to access room {room} while not joined.',
-                        message=message
-                    )
+                    send_statuscode(client, statuscodes.room_not_joined,
+                                    details=f'Attempted to access room {room} while not joined.',
+                                    message=message)
                     return
                 clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
                 clients = server.copy(clients)
@@ -357,12 +349,9 @@ class clpv4:
             any_results_found = False
             async for room in server.async_iterable(rooms):
                 if room not in client.rooms:
-                    send_statuscode(
-                        client,
-                        statuscodes.room_not_joined,
-                        details=f'Attempted to access room {room} while not joined.',
-                        message=message
-                    )
+                    send_statuscode(client, statuscodes.room_not_joined,
+                                    details=f'Attempted to access room {room} while not joined.',
+                                    message=message)
                     return
                 clients = await server.rooms_manager.get_specific_in_room(room, cl4_protocol, message['id'])
                 clients = server.copy(clients)
@@ -370,13 +359,10 @@ class clpv4:
                     continue
                 if not any_results_found:
                     any_results_found = True
-                if self.warn_if_multiple_username_matches and len(clients) >> 1:
-                    send_statuscode(
-                        client,
-                        statuscodes.id_not_specific,
-                        details=f'Multiple matches found for {message["id"]}, found {len(clients)} matches. Please use Snowflakes, UUIDs, or client objects instead.',
-                        message=message
-                    )
+                if self.warn_if_multiple_username_matches and len(clients) > 1:
+                    send_statuscode(client, statuscodes.id_not_specific,
+                                    details=f'Multiple matches found for {message["id"]}, found {len(clients)} matches. Please use Snowflakes, UUIDs, or client objects instead.',
+                                    message=message)
                     return
                 tmp_message = {
                     "cmd": "pvar",
@@ -387,12 +373,9 @@ class clpv4:
                 }
                 server.send_packet(clients, tmp_message)
             if not any_results_found:
-                send_statuscode(
-                    client,
-                    statuscodes.id_not_found,
-                    details=f'No matches found: {message["id"]}',
-                    message=message
-                )
+                send_statuscode(client, statuscodes.id_not_found,
+                                details=f'No matches found: {message["id"]}',
+                                message=message)
                 return
             send_statuscode(client, statuscodes.ok, message=message)
 
@@ -402,12 +385,9 @@ class clpv4:
                 return
             if client.username_set:
                 server.logger.error(f"Client {client.snowflake} attempted to set username again!")
-                send_statuscode(
-                    client,
-                    statuscodes.id_already_set,
-                    val=generate_user_object(client),
-                    message=message
-                )
+                send_statuscode(client, statuscodes.id_already_set,
+                                val=generate_user_object(client),
+                                message=message)
                 return
             server.rooms_manager.unsubscribe(client, "default")
             server.clients_manager.set_username(client, message['val'])
@@ -430,12 +410,9 @@ class clpv4:
                 "val": server.rooms_manager.generate_userlist("default", cl4_protocol),
                 "rooms": "default"
             })
-            send_statuscode(
-                client,
-                statuscodes.ok,
-                val=generate_user_object(client),
-                message=message
-            )
+            send_statuscode(client, statuscodes.ok,
+                            val=generate_user_object(client),
+                            message=message)
 
         @server.on_command(cmd="link", schema=cl4_protocol)
         async def on_link(client, message):
@@ -448,7 +425,7 @@ class clpv4:
                     message["val"] = set(message["val"])
                 if type(message["val"]) == str:
                     message["val"] = {message["val"]}
-            if not "default" in message["val"]:
+            if "default" not in message["val"]:
                 server.rooms_manager.unsubscribe(client, "default")
                 clients = await server.rooms_manager.get_all_in_rooms("default", cl4_protocol)
                 clients = server.copy(clients)
@@ -498,33 +475,6 @@ class clpv4:
                 clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
                 clients = server.copy(clients)
                 server.send_packet(clients, {
-                    "cmd": "ulist",
-                    "mode": "remove",
-                    "val": generate_user_object(client),
-                    "rooms": room
-                })
-            if not len(client.rooms):
-                server.rooms_manager.subscribe(client, "default")
-                clients = await server.rooms_manager.get_all_in_rooms("default", cl4_protocol)
-                clients = server.copy(clients)
-                try:
-                    clients.remove(client)
-                except ValueError:
-                    pass
-                server.send_packet(clients, {
-                    "cmd": "ulist",
-                    "mode": "add",
-                    "val": generate_user_object(client),
-                    "rooms": "default"
-                })
-                server.send_packet(client, {
-                    "cmd": "ulist",
-                    "mode": "set",
-                    "val": server.rooms_manager.generate_userlist("default", cl4_protocol),
-                    "rooms": "default"
-                })
-            send_statuscode(client, statuscodes.ok, message=message)
-
         @server.on_command(cmd="direct", schema=cl4_protocol)
         async def on_direct(client, message):
             if not valid(client, message, cl4_protocol.direct):
