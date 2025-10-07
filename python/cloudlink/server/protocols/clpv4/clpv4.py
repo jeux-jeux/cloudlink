@@ -179,27 +179,32 @@ class clpv4:
         # -------------------------
         @server.on_connect
         async def validate_origin(client):
-            origin = client.request_headers.get("Origin", "")
-            origin_norm = origin.strip().lower().rstrip("/")
-            origin_norm = origin.strip().lower().rstrip("/")
-            # 🔓 Autorise si aucune origin et que ALLOW_NO_ORIGIN est True
-            if origin_norm == allowed_origin.strip().lower().rstrip("/"):
-                if ALLOW_NO_ORIGIN:
-                    server.logger.info("[ACCEPT] Aucune Origin reçue → connexion autorisée.")
-                    return
-                server.logger.warning("[REFUS] Origin manquante et ALLOW_NO_ORIGIN=False")
-                await client.disconnect(code=4001, reason="Origin required")
+            origin = client.request_headers.get("Origin")
+
+            # Autoriser si l'origine est manquante (Render ou tests locaux)
+            if not origin:
+                server.logger.info(f"[ACCEPT] Aucun header Origin reçu → connexion autorisée.")
                 return
 
-            # ✅ Autorise si l'origine correspond, même avec un / final
-            for allowed_origin in self.allowed_origins:
-                if origin_norm == allowed_origin.strip().lower().rstrip("/"):
-                    server.logger.info(f"[ACCEPT] Origin autorisée : {origin}")
-                    return
+            # Normaliser l'origine (supprimer / à la fin et mettre en minuscule)
+            origin_norm = origin.strip().lower().rstrip("/")
 
-            # 🚫 Sinon, refuse proprement
-            server.logger.warning(f"[REFUS] Origin refusée : {origin} (autorisées: {self.allowed_origins})")
-            await client.disconnect(code=4001, reason="Origin not allowed")
+            # Vérifier si elle est dans la liste (avec ou sans / final)
+            allowed = any(
+                origin_norm == allowed_origin.strip().lower().rstrip("/")
+                for allowed_origin in self.allowed_origins
+            )
+
+            if allowed:
+                server.logger.info(f"[ACCEPT] Origin autorisée : {origin}")
+            else:
+                server.logger.warning(
+                    f"[REFUS] Origin refusée : {origin} (autorisées : {self.allowed_origins})"
+                )
+                try:
+                    await client.disconnect(code=4001, reason="Origin not allowed")
+                except Exception:
+                    pass
 
         # -------------------------
         # ÉVÉNEMENTS & COMMANDES
