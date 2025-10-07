@@ -179,32 +179,22 @@ class clpv4:
         # -------------------------
         @server.on_connect
         async def validate_origin(client):
-            origin = client.request_headers.get("Origin")
+                origin = client.request_headers.get("Origin")
 
-            # Autoriser si l'origine est manquante (Render ou tests locaux)
-            if not origin:
-                server.logger.info(f"[ACCEPT] Aucun header Origin reçu → connexion autorisée.")
-                return
+                if not origin:
+                        # Autoriser si flag
+                        return
 
-            # Normaliser l'origine (supprimer / à la fin et mettre en minuscule)
-            origin_norm = origin.strip().lower().rstrip("/")
+                origin_norm = origin.strip().lower().rstrip("/")
 
-            # Vérifier si elle est dans la liste (avec ou sans / final)
-            allowed = any(
-                origin_norm == allowed_origin.strip().lower().rstrip("/")
-                for allowed_origin in self.allowed_origins
-            )
+                # Compare contre versions normalisées des origins autorisés
+                for allowed in self.allowed_origins:
+                        if origin_norm == allowed.strip().lower().rstrip("/"):
+                                # Match → autorisé
+                                return
 
-            if allowed:
-                server.logger.info(f"[ACCEPT] Origin autorisée : {origin}")
-            else:
-                server.logger.warning(
-                    f"[REFUS] Origin refusée : {origin} (autorisées : {self.allowed_origins})"
-                )
-                try:
-                    await client.disconnect(code=4001, reason="Origin not allowed")
-                except Exception:
-                    pass
+                # Refus sinon
+                await client.disconnect(code=4001, reason="Origin not allowed")
 
         # -------------------------
         # ÉVÉNEMENTS & COMMANDES
