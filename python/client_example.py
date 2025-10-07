@@ -270,6 +270,48 @@ def route_private_message():
 
     return jsonify(cloudlink_action(action))
 
+@app.route("/deleter", methods=["POST"])
+def route_kick_client():
+    data = request.get_json(force=True, silent=True) or {}
+
+    # Vérifie la clé d'API (fonction que tu as déjà)
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
+
+    # Récupération des paramètres
+    room = data.get("room")
+    targets = data.get("targets") or data.get("target")
+    if isinstance(targets, str):
+        targets = [targets]
+
+    # Validation simple
+    if not room or not isinstance(targets, list) or not targets:
+        return jsonify({"status": "error", "message": "room and targets (list or single) required"}), 400
+
+    # Secret admin (optionnel) : envoyé dans le payload si présent en env
+    secret = os.getenv("ADMIN_SECRET", "").strip()
+
+    # Action envoyée au client CloudLink (cloudlink_action doit gérer l'exécution asynchrone)
+    async def action(client, username):
+        # Envoie une commande delete_user par cible (un par un)
+        for t in targets:
+            payload = {"cmd": "delete_user", "id": t}
+            if secret:
+                payload["secret"] = secret
+            # Utilise send_packet pour envoyer au client CloudLink
+            try:
+                client.send_packet(payload)
+            except Exception:
+                # Si client a une autre API, tu peux tenter server.send_packet ou client.send
+                try:
+                    client.send(payload)
+                except Exception:
+                    # log si besoin (server.logger si accessible)
+                    pass
+
+    # cloudlink_action doit retourner quelque chose (résultat / statut)
+    result = cloudlink_action(action)
+    return jsonify(result)
 
 @app.route("/sending/global-variable", methods=["POST"])
 def route_global_variable():
