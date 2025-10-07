@@ -136,21 +136,22 @@ class clpv4:
         self.generate_user_object = generate_user_object
 
         # Authorization check on connection
-		@server.on_connect
-		async def authorize_connection(client):
-			# Récupérer l'Origin depuis les headers
-			origin = client.request_headers.get("Origin", "")
-			
-			# Vérifier si les origines autorisées sont définies
-			if hasattr(self, "allowed_origins") and self.allowed_origins:
-				if origin not in self.allowed_origins:
-					# Refuser la connexion si l'Origin n'est pas dans la liste
-					self.send_statuscode(client, self.statuscodes.refused, details=f"Origin {origin} not allowed")
-					await client.disconnect()
-					return False
-			
-			# Sinon autoriser la connexion
-			return True
+        @server.on_connect
+        async def authorize_connection(client):
+                # Récupérer l'Origin depuis les headers
+                origin = client.request_headers.get("Origin", "")
+                
+                # Vérifier si les origines autorisées sont définies
+                if hasattr(self, "allowed_origins") and self.allowed_origins:
+                        if origin not in self.allowed_origins:
+                        	# Refuser la connexion si l'Origin n'est pas dans la liste
+                            self.send_statuscode(client, self.statuscodes.refused, details=f"Origin {origin} not allowed")
+                            await client.disconnect()
+                            return False
+                
+                # Sinon autoriser la connexion
+                return True
+
 
 
 
