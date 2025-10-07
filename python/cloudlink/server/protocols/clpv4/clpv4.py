@@ -115,17 +115,45 @@ class clpv4:
 
         # Gather rooms
         def gather_rooms(client, message):
-            if "rooms" in message:
-                rooms = message["rooms"]
-                if type(rooms) == str:
-                    rooms = {rooms}
-                if type(rooms) == list:
-                    rooms = set(rooms)
-                return rooms
-            else:
-                return client.rooms
+                """
+                Retourne un set de rooms à partir du message.
+                Supporte :
+                 - 'rooms' (str | list)
+                 - 'room'  (str | int)
+                 - si absent : client.rooms (déjà un set)
+                Toutes les valeurs sont normalisées en str.
+                """
+                # priorité aux champs fournis
+                if "rooms" in message:
+                        rooms = message["rooms"]
+                        # si simple string ou int
+                        if isinstance(rooms, (str, int)):
+                                return {str(rooms)}
+                        # si list/tuple
+                        if isinstance(rooms, (list, tuple, set)):
+                                return set(str(r) for r in rooms)
+                        # si autre -> tenter cast
+                        try:
+                                return {str(rooms)}
+                        except Exception:
+                                return client.rooms
 
+                # support legacy 'room'
+                if "room" in message:
+                        room = message["room"]
+                        if isinstance(room, (str, int)):
+                                return {str(room)}
+                        if isinstance(room, (list, tuple, set)):
+                                return set(str(r) for r in room)
+                        try:
+                                return {str(room)}
+                        except Exception:
+                                return client.rooms
+
+                # fallback : utiliser les rooms du client (déjà set de str probablement)
+                return set(str(r) for r in client.rooms)
         self.gather_rooms = gather_rooms
+
 
         # Generate user object
         def generate_user_object(obj):
