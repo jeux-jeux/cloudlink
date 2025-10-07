@@ -19,7 +19,7 @@ class clpv4:
             "tw-editor://.",
             "tw-editor://",
             "https://turbowarp.org/",
-            "https://turbowarp.org"'
+            "https://turbowarp.org",
             "https://cloudlink-manager.onrender.com",
             "https://cloudlink-manager.onrender.com/",
             "https://jeux-jeux.github.io",
