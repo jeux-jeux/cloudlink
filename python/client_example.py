@@ -240,69 +240,135 @@ def cloudlink_action(action_coro):
 @app.route("/sending/global-message", methods=["POST"])
 def route_global_message():
     data = request.get_json(force=True, silent=True) or {}
+
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
-    rooms = data.get("rooms")
+
+    rooms = data.get("rooms") or data.get("room")
     message = data.get("message")
-    if not isinstance(rooms, list) or not message:
-        return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
+
+    # Normalisation
+    if isinstance(rooms, str):
+        rooms = [rooms]
+    elif not isinstance(rooms, list):
+        return jsonify({"status": "error", "message": "room(s) required"}), 400
+
+    if not message:
+        return jsonify({"status": "error", "message": "message required"}), 400
 
     async def action(client, username):
-        # send_packet est synchrone dans cette lib => pas d'await
-        client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
+        for room in rooms:
+            client.send_packet({
+                "cmd": "gmsg",
+                "val": message,
+                "room": room
+            })
 
     return jsonify(cloudlink_action(action))
+
 
 
 @app.route("/sending/private-message", methods=["POST"])
 def route_private_message():
     data = request.get_json(force=True, silent=True) or {}
+
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
+
     username_target = data.get("username")
-    room = data.get("room")
+    rooms = data.get("rooms") or data.get("room")
     message = data.get("message")
-    if not username_target or not room or not message:
-        return jsonify({"status": "error", "message": "username, room and message required"}), 400
+
+    if not username_target:
+        return jsonify({"status": "error", "message": "username required"}), 400
+
+    if isinstance(rooms, str):
+        rooms = [rooms]
+    elif not isinstance(rooms, list):
+        return jsonify({"status": "error", "message": "room(s) required"}), 400
+
+    if not message:
+        return jsonify({"status": "error", "message": "message required"}), 400
 
     async def action(client, username):
-        client.send_packet({"cmd": "pmsg", "val": message, "id": username_target, "room": room})
+        for room in rooms:
+            client.send_packet({
+                "cmd": "pmsg",
+                "val": message,
+                "id": username_target,
+                "room": room
+            })
 
     return jsonify(cloudlink_action(action))
+
+
 
 @app.route("/sending/global-variable", methods=["POST"])
 def route_global_variable():
     data = request.get_json(force=True, silent=True) or {}
+
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
-    room = data.get("room")
+
+    rooms = data.get("rooms") or data.get("room")
     name = data.get("name")
     val = data.get("val")
-    if not room or name is None:
-        return jsonify({"status": "error", "message": "room and name required"}), 400
+
+    if name is None:
+        return jsonify({"status": "error", "message": "name required"}), 400
+
+    if isinstance(rooms, str):
+        rooms = [rooms]
+    elif not isinstance(rooms, list):
+        return jsonify({"status": "error", "message": "room(s) required"}), 400
 
     async def action(client, username):
-        client.send_packet({"cmd": "gvar", "name": name, "val": val, "room": room})
+        for room in rooms:
+            client.send_packet({
+                "cmd": "gvar",
+                "name": name,
+                "val": val,
+                "room": room
+            })
 
     return jsonify(cloudlink_action(action))
+
 
 
 @app.route("/sending/private-variable", methods=["POST"])
 def route_private_variable():
     data = request.get_json(force=True, silent=True) or {}
+
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
+
     username_target = data.get("username")
-    room = data.get("room")
+    rooms = data.get("rooms") or data.get("room")
     name = data.get("name")
     val = data.get("val")
-    if not username_target or not room or name is None:
-        return jsonify({"status": "error", "message": "username, room and name required"}), 400
+
+    if not username_target:
+        return jsonify({"status": "error", "message": "username required"}), 400
+    if name is None:
+        return jsonify({"status": "error", "message": "name required"}), 400
+
+    if isinstance(rooms, str):
+        rooms = [rooms]
+    elif not isinstance(rooms, list):
+        return jsonify({"status": "error", "message": "room(s) required"}), 400
 
     async def action(client, username):
-        client.send_packet({"cmd": "pvar", "name": name, "val": val, "room": room, "id": username_target})
+        for room in rooms:
+            client.send_packet({
+                "cmd": "pvar",
+                "name": name,
+                "val": val,
+                "room": room,
+                "id": username_target
+            })
 
     return jsonify(cloudlink_action(action))
+
 
 @app.route("/deleter", methods=["POST"])
 def route_kick_client():
