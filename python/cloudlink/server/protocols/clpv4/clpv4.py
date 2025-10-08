@@ -225,8 +225,7 @@ class clpv4:
         # Protocol identified
         @server.on_protocol_identified(schema=cl4_protocol)
         async def protocol_identified(client):
-            server.logger.debug(f"Adding client {client.snowflake} to default room.")
-            server.rooms_manager.subscribe(client, "default")
+            server.logger.debug(f"Client {client.snowflake} identified with protocol cl4_protocol (no default room subscription).")
 
         # Protocol disconnect
         @server.on_protocol_disconnect(schema=cl4_protocol)
