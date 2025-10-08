@@ -240,32 +240,22 @@ def cloudlink_action(action_coro):
 @app.route("/sending/global-message", methods=["POST"])
 def route_global_message():
     data = request.get_json(force=True, silent=True) or {}
-
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
-
-    rooms = data.get("rooms") or data.get("room")
+    rooms = data.get("rooms")
     message = data.get("message")
-
-    # Normalisation
-    if isinstance(rooms, str):
-        rooms = [rooms]
-    elif not isinstance(rooms, list):
-        return jsonify({"status": "error", "message": "room(s) required"}), 400
-
-    if not message:
-        return jsonify({"status": "error", "message": "message required"}), 400
+    if not isinstance(rooms, list) or not message:
+        return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
 
     async def action(client, username):
+        # Vérification de l'existence des rooms
         for room in rooms:
-            client.send_packet({
-                "cmd": "gmsg",
-                "val": message,
-                "room": room
-            })
+            if not client.is_subscribed(room):
+                client.subscribe(room)
+        # Envoi du message
+        client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
 
     return jsonify(cloudlink_action(action))
-
 
 
 @app.route("/sending/private-message", methods=["POST"])
