@@ -398,9 +398,10 @@ class clpv4:
                         clients = server.copy(clients)
 
                         tmp_message = {
-                                "cmd": "gvar",
-                                "name": messa
-
+                                "cmd": "gmsg",
+                                "val": message["val"],
+                                "rooms": room
+                        }                   
 
         @server.on_command(cmd="setid", schema=cl4_protocol)
         async def on_setid(client, message):
