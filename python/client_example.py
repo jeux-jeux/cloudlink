@@ -242,20 +242,24 @@ def route_global_message():
     data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
+
     rooms = data.get("rooms")
     message = data.get("message")
+
     if not isinstance(rooms, list) or not message:
         return jsonify({"status": "error", "message": "rooms (list) and message required"}), 400
 
     async def action(client, username):
-        # Vérification de l'existence des rooms
+        # Rejoindre chaque room avant d'envoyer le message
         for room in rooms:
-            if not client.is_subscribed(room):
-                client.subscribe(room)
-        # Envoi du message
+            client.send_packet({"cmd": "join", "val": room})
+            await asyncio.sleep(0.1)  # petite pause pour laisser le serveur traiter le join
+
+        # Envoyer le message global
         client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
 
     return jsonify(cloudlink_action(action))
+
 
 
 @app.route("/sending/private-message", methods=["POST"])
