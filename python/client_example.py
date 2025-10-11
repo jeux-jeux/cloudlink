@@ -27,7 +27,7 @@ FALLBACK_CLOUDLINK_WS = os.getenv("FALLBACK_CLOUDLINK_WS", "wss://cloudlink-serv
 
 WS_EXTRA_HEADERS = [
     ("Origin", "https://cloudlink-manager.onrender.com/"),
-    ("User-Agent", "turbowarp-desktop/1.14.4")
+    ("User-Agent", "proxy_render_manager")
 ]
 
 USERNAME_TIMEOUT = int(os.getenv("USERNAME_TIMEOUT", "5"))
