@@ -162,11 +162,6 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
             result["error"] = str(e)
             result["trace"] = traceback.format_exc()
             app.logger.exception("cloudlink_action_async: exception inside on_connect")
-        finally:
-            try:
-                await client.disconnect()
-            except Exception:
-                app.logger.exception("cloudlink_action_async: disconnect failed")
 
     @client.on_disconnect
     async def _on_disconnect():
