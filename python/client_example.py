@@ -254,6 +254,8 @@ def route_global_message():
         for room in rooms:
             client.send_packet({"cmd": "join", "val": room})
             await asyncio.sleep(0.1)  # petite pause pour laisser le serveur traiter le join
+        
+        print("DEBUG proxy -> send_packet:", {"cmd":"gmsg","val":message,"room":room})
 
         # Envoyer le message global
         client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
