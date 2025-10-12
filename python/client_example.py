@@ -155,7 +155,7 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
             await asyncio.sleep(0.15)
 
             # action terminée, on se déconnecte
-            await client.disconnect()
+            client.disconnect()
 
             # résultat OK
             result["ok"] = True
