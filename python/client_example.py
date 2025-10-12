@@ -265,8 +265,11 @@ def route_private_message():
     if not username_target:
         return jsonify({"status": "error", "message": "username required"}), 400
 
-    if isinstance(rooms, str):
-        rooms = [rooms]
+    # Normaliser rooms en liste
+    if isinstance(rooms, str) or isinstance(rooms, int):
+        rooms = [str(rooms)]
+    elif rooms is None:
+        return jsonify({"status": "error", "message": "room(s) required"}), 400
     elif not isinstance(rooms, list):
         return jsonify({"status": "error", "message": "room(s) required"}), 400
 
@@ -274,16 +277,22 @@ def route_private_message():
         return jsonify({"status": "error", "message": "message required"}), 400
 
     async def action(client, username):
+        # s'abonner d'abord aux rooms
+        client.send_packet({"cmd": "link", "val": rooms})
+        await asyncio.sleep(0.15)
+
+        # envoyer un pmsg par room (schema serveur attend 'room' ou 'rooms')
         for room in rooms:
             client.send_packet({
                 "cmd": "pmsg",
                 "val": message,
                 "id": username_target,
-                "room": room
+                "room": str(room)
             })
 
-    return jsonify(cloudlink_action(action))
-
+    result = cloudlink_action(action)
+    status = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status
 
 
 @app.route("/sending/global-variable", methods=["POST"])
@@ -300,22 +309,31 @@ def route_global_variable():
     if name is None:
         return jsonify({"status": "error", "message": "name required"}), 400
 
-    if isinstance(rooms, str):
-        rooms = [rooms]
+    # Normaliser rooms en liste
+    if isinstance(rooms, str) or isinstance(rooms, int):
+        rooms = [str(rooms)]
+    elif rooms is None:
+        return jsonify({"status": "error", "message": "room(s) required"}), 400
     elif not isinstance(rooms, list):
         return jsonify({"status": "error", "message": "room(s) required"}), 400
 
     async def action(client, username):
+        # abonner le client aux rooms
+        client.send_packet({"cmd": "link", "val": rooms})
+        await asyncio.sleep(0.15)
+
+        # envoyer gvar pour chaque room
         for room in rooms:
             client.send_packet({
                 "cmd": "gvar",
                 "name": name,
                 "val": val,
-                "room": room
+                "room": str(room)
             })
 
-    return jsonify(cloudlink_action(action))
-
+    result = cloudlink_action(action)
+    status = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status
 
 
 @app.route("/sending/private-variable", methods=["POST"])
@@ -335,22 +353,33 @@ def route_private_variable():
     if name is None:
         return jsonify({"status": "error", "message": "name required"}), 400
 
-    if isinstance(rooms, str):
-        rooms = [rooms]
+    # Normaliser rooms en liste
+    if isinstance(rooms, str) or isinstance(rooms, int):
+        rooms = [str(rooms)]
+    elif rooms is None:
+        return jsonify({"status": "error", "message": "room(s) required"}), 400
     elif not isinstance(rooms, list):
         return jsonify({"status": "error", "message": "room(s) required"}), 400
 
     async def action(client, username):
+        # s'abonner d'abord aux rooms
+        client.send_packet({"cmd": "link", "val": rooms})
+        await asyncio.sleep(0.15)
+
+        # envoyer pvar par room
         for room in rooms:
             client.send_packet({
                 "cmd": "pvar",
                 "name": name,
                 "val": val,
-                "room": room,
+                "room": str(room),
                 "id": username_target
             })
 
-    return jsonify(cloudlink_action(action))
+    result = cloudlink_action(action)
+    status = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status
+
 
 
 @app.route("/deleter", methods=["POST"])
