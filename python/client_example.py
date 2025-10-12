@@ -244,10 +244,10 @@ def route_global_message():
         # DEBUG log pour vérifier
         print("DEBUG proxy -> send_packet:", {"cmd": "gmsg", "val": message, "rooms": rooms})
         # Envoyer le message global directement
-        client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})
-
-    return jsonify(cloudlink_action(action))
-
+        client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})   
+    result = cloudlink_action(action)
+    status = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status
 
 @app.route("/sending/private-message", methods=["POST"])
 def route_private_message():
