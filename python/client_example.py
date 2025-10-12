@@ -243,6 +243,8 @@ def route_global_message():
     async def action(client, username):
         # DEBUG log pour vérifier
         print("DEBUG proxy -> send_packet:", {"cmd": "gmsg", "val": message, "rooms": rooms})
+        client.send_packet({"cmd": "link", "val": rooms})
+        await asyncio.sleep(0.15)
         # Envoyer le message global directement
         client.send_packet({"cmd": "gmsg", "val": message, "rooms": rooms})   
     result = cloudlink_action(action)
