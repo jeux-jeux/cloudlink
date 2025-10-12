@@ -22,8 +22,6 @@ app.logger.setLevel(logging.DEBUG)
 ENV_KEY_NAME = "CLE"
 # URL du service d'auth/discovery (optionnel)
 PROXY_AUTH_URL = os.getenv("PROXY")  # ex: https://proxy-authentification-v3.onrender.com/
-# Fallback si discovery échoue (utile en dev)
-FALLBACK_CLOUDLINK_WS = os.getenv("FALLBACK_CLOUDLINK_WS", "wss://cloudlink-server.onrender.com/")
 
 WS_EXTRA_HEADERS = [
     ("Origin", "https://cloudlink-manager.onrender.com/"),
@@ -58,7 +56,7 @@ def fetch_cloudlink_ws_url():
     if PROXY_AUTH_URL:
         try:
             app.logger.debug(f"fetch_cloudlink_ws_url: requesting discovery from {PROXY_AUTH_URL}")
-            resp = requests.get(PROXY_AUTH_URL, timeout=5)
+            resp = requests.get(PROXY_AUTH_URL, timeout=5, headers={"Origin": "https://cloudlink-manager.onrender.com"})
             resp.raise_for_status()
             j = resp.json()
             # accepte plusieurs noms de champ possibles
