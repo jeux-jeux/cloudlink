@@ -142,85 +142,43 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
     finished_thread = threading.Event()
     result = {"ok": False, "error": None, "username": None, "trace": None}
 
-	async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION_TIMEOUT):
-	    app.logger.debug(f"cloudlink_action_async: start host={ws_url}")
-	    client = cl_client()
-	    finished_thread = threading.Event()
-	    result = {"ok": False, "error": None, "username": None, "trace": None}
+    @client.on_connect
+    async def _on_connect():
+        app.logger.debug("cloudlink_action_async: on_connect called")
+        try:
+            username = str(random.randint(100_000_000, 999_999_999))
+            result["username"] = username
 
-	    @client.on_connect
-	    async def _on_connect():
-	        app.logger.debug("cloudlink_action_async: on_connect called")
-	        try:
-	            username = str(random.randint(100_000_000, 999_999_999))
-	            result["username"] = username
+            # set_username
+            await asyncio.wait_for(client.protocol.set_username(username), timeout=USERNAME_TIMEOUT)
 
-	            # set_username
-	            await asyncio.wait_for(client.protocol.set_username(username), timeout=USERNAME_TIMEOUT)
+            # run action
+            await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
 
-	            # run action
-	            await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
+            # small delay to let client flush outgoing messages
+            await asyncio.sleep(0.15)
 
-	            # small delay to let client flush outgoing messages
-	            await asyncio.sleep(0.15)
+            # action terminée, on se déconnecte
+            await client.disconnect()
 
-	            # action terminée, on se déconnecte
-	            await client.disconnect()
+            # résultat OK
+            result["ok"] = True
+            app.logger.debug("cloudlink_action_async: action completed OK")
+        except Exception as e:
+            result["error"] = str(e)
+            result["trace"] = traceback.format_exc()
+            app.logger.exception("cloudlink_action_async: exception inside on_connect")
 
-	            # résultat OK
-	            result["ok"] = True
-	            app.logger.debug("cloudlink_action_async: action completed OK")
-	        except Exception as e:
-	            result["error"] = str(e)
-	            result["trace"] = traceback.format_exc()
-	            app.logger.exception("cloudlink_action_async: exception inside on_connect")
+    @client.on_disconnect
+    async def _on_disconnect():
+        app.logger.debug("cloudlink_action_async: on_disconnect -> set finished_thread")
+        finished_thread.set()
 
-	    @client.on_disconnect
-	    async def _on_disconnect():
-	        app.logger.debug("cloudlink_action_async: on_disconnect -> set finished_thread")
-	        finished_thread.set()
-
-	    def run_client():
-	        try:
-	            # monkeypatch for extra headers
-	            try:
-	                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
-	            except Exception as e:
-	                app.logger.warning(f"cloudlink_action_async: monkeypatch client.ws.connect failed: {e}")
-	            app.logger.debug(f"cloudlink_action_async: client.run(host={ws_url}) starting")
-	            client.run(host=ws_url)
-	            app.logger.debug("cloudlink_action_async: client.run returned")
-	            finished_thread.set()
-	        except Exception as e:
-	            result["error"] = str(e)
-	            result["trace"] = traceback.format_exc()
-	            app.logger.exception("cloudlink_action_async: exception in run_client")
-	            try:
-	                finished_thread.set()
-	            except Exception:
-	                pass
-
-	    thread = threading.Thread(target=run_client, daemon=True)
-	    thread.start()
-
-	    # Wait with overall timeout
-	    loop = asyncio.get_running_loop()
-	    try:
-	        await asyncio.wait_for(loop.run_in_executor(None, finished_thread.wait), timeout=total_timeout)
-	    except asyncio.TimeoutError:
-	        app.logger.warning("cloudlink_action_async: timeout waiting for client to finish")
-	        out = {"status": "error", "username": result.get("username"), "detail": "timeout waiting for disconnect"}
-	        if result.get("trace"):
-	            out["trace"] = result.get("trace")
-	        return out
-
-	    if result.get("ok"):
-	        return {"status": "ok", "username": result.get("username")}
-	    else:
-	        out = {"status": "error", "username": result.get("username"), "detail": result.get("error")}
-	        if result.get("trace"):
-	            out["trace"] = result.get("trace")
-	        return out
+    def run_client():
+        try:
+            # monkeypatch for extra headers
+            try:
+                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
 
 def cloudlink_action(action_coro):
     """
