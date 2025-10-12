@@ -371,38 +371,61 @@ class clpv4:
                 send_statuscode(client, statuscodes.ok, message=message)
 
 
-        @server.on_command(cmd="gvar", schema=cl4_protocol)
-        async def on_gvar(client, message):
-                if not valid(client, message, cl4_protocol.gvar):
-                        return
+		@server.on_command(cmd="gvar", schema=cl4_protocol)
+		async def on_gvar(client, message):
+				# Validate schema
+				if not valid(client, message, cl4_protocol.gvar):
+						return
 
-                rooms = gather_rooms(client, message)
-                if not rooms:
-                        rooms = client.rooms
+				# Gather rooms to send to
+				rooms = gather_rooms(client, message)
 
-                async for room in server.async_iterable(rooms):
+				# If no explicit rooms provided, use client's rooms
+				if not rooms:
+						rooms = client.rooms
 
-                        if room == "default":
-                                server.logger.warning(f"[GVAR] Ignoré: variable vers 'default' depuis {client.snowflake}")
-                                continue
+				# Broadcast to all subscribed rooms
+				async for room in server.async_iterable(rooms):
 
-                        if room not in client.rooms:
-                                send_statuscode(
-                                        client,
-                                        statuscodes.room_not_joined,
-                                        details=f'Attempted to access room {room} while not joined.',
-                                        message=message
-                                )
-                                return
+						# Optionally ignore default room (keeps same behaviour que gmsg)
+						if room == "default":
+								server.logger.warning(f"[GVAR] Ignoré: variable vers 'default' depuis {client.snowflake}")
+								continue
 
-                        clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
-                        clients = server.copy(clients)
+						# Prevent accessing rooms not joined
+						if room not in client.rooms:
+								send_statuscode(
+										client,
+										statuscodes.room_not_joined,
+										details=f'Attempted to access room {room} while not joined.',
+										message=message
+								)
+								return
 
-                        tmp_message = {
-                                "cmd": "gmsg",
-                                "val": message["val"],
-                                "rooms": room
-                        }                   
+						clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
+						clients = server.copy(clients)
+
+						# Build correct gvar payload (name + val)
+						tmp_message = {
+								"cmd": "gvar",
+								"name": message["name"],
+								"val": message["val"],
+								"rooms": room
+						}
+
+						# Attach listener (if present) and broadcast
+						if "listener" in message:
+								# Don't send origin back to sender
+								try:
+										clients.remove(client)
+								except KeyError:
+										pass
+								server.send_packet(clients, tmp_message)
+								# send sender a copy with listener field
+								tmp_message["listener"] = message["listener"]
+								server.send_packet(client, tmp_message)
+						else:
+								server.send_packet(clients, tmp_message)
 
         @server.on_command(cmd="setid", schema=cl4_protocol)
         async def on_setid(client, message):
