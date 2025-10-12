@@ -233,6 +233,7 @@ def cloudlink_action(action_coro):
         app.logger.exception("cloudlink_action: asyncio.run raised")
         return {"status": "error", "message": "internal_error", "detail": str(e)}
 
+
 # -------------------------
 # Routes sending (requièrent 'cle' dans body)
 # -------------------------
