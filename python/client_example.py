@@ -179,6 +179,40 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
             # monkeypatch for extra headers
             try:
                 client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+            except Exception as e:
+                app.logger.warning(f"cloudlink_action_async: monkeypatch client.ws.connect failed: {e}")
+
+            app.logger.debug(f"cloudlink_action_async: client.run(host={ws_url}) starting")
+            client.run(host=ws_url)
+            app.logger.debug("cloudlink_action_async: client.run returned")
+            finished_thread.set()
+        except Exception as e:
+            result["error"] = str(e)
+            result["trace"] = traceback.format_exc()
+            app.logger.exception("cloudlink_action_async: exception in run_client")
+            finished_thread.set()
+
+    thread = threading.Thread(target=run_client, daemon=True)
+    thread.start()
+
+    # Wait with overall timeout
+    loop = asyncio.get_running_loop()
+    try:
+        await asyncio.wait_for(loop.run_in_executor(None, finished_thread.wait), timeout=total_timeout)
+    except asyncio.TimeoutError:
+        app.logger.warning("cloudlink_action_async: timeout waiting for client to finish")
+        out = {"status": "error", "username": result.get("username"), "detail": "timeout waiting for disconnect"}
+        if result.get("trace"):
+            out["trace"] = result.get("trace")
+        return out
+
+    if result.get("ok"):
+        return {"status": "ok", "username": result.get("username")}
+    else:
+        out = {"status": "error", "username": result.get("username"), "detail": result.get("error")}
+        if result.get("trace"):
+            out["trace"] = result.get("trace")
+        return out
 
 def cloudlink_action(action_coro):
     """
