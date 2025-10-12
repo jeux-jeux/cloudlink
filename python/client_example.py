@@ -28,9 +28,9 @@ WS_EXTRA_HEADERS = [
     ("User-Agent", "proxy_render_manager")
 ]
 
-USERNAME_TIMEOUT = int(os.getenv("USERNAME_TIMEOUT", "5"))
-ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "6"))
-TOTAL_ACTION_TIMEOUT = int(os.getenv("TOTAL_ACTION_TIMEOUT", "10"))
+USERNAME_TIMEOUT = int(os.getenv("USERNAME_TIMEOUT", "10"))
+ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "15"))
+TOTAL_ACTION_TIMEOUT = int(os.getenv("TOTAL_ACTION_TIMEOUT", "25"))
 
 # -------------------------
 # Helpers
@@ -52,7 +52,7 @@ def fetch_cloudlink_ws_url():
     if PROXY_AUTH_URL:
         try:
             app.logger.debug(f"fetch_cloudlink_ws_url: requesting discovery from {PROXY_AUTH_URL}")
-            resp = requests.get(PROXY_AUTH_URL, timeout=5)
+            resp = requests.get(PROXY_AUTH_URL, timeout=5, headers={"Origin": "https://cloudlink-manager.onrender.com"})
             resp.raise_for_status()
             j = resp.json()
             url = j.get("web_socket_server") or j.get("websocket") or j.get("web_socket_url") or j.get("url")
