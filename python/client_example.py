@@ -49,29 +49,25 @@ def check_key(data: dict) -> bool:
     return ok
 
 def fetch_cloudlink_ws_url():
-    """
-    Essaie d'interroger PROXY_AUTH_URL pour récupérer le champ web_socket_server.
-    Retourne toujours une chaîne ou FALLBACK_CLOUDLINK_WS en dernier recours.
-    """
     if PROXY_AUTH_URL:
         try:
             app.logger.debug(f"fetch_cloudlink_ws_url: requesting discovery from {PROXY_AUTH_URL}")
-            resp = requests.get(PROXY_AUTH_URL, timeout=5, headers={"Origin": "https://cloudlink-manager.onrender.com"})
+            resp = requests.get(PROXY_AUTH_URL, timeout=5)
             resp.raise_for_status()
             j = resp.json()
-            # accepte plusieurs noms de champ possibles
             url = j.get("web_socket_server") or j.get("websocket") or j.get("web_socket_url") or j.get("url")
             if url:
                 app.logger.info(f"fetch_cloudlink_ws_url: discovered websocket url: {url}")
                 return url
             else:
-                app.logger.warning("fetch_cloudlink_ws_url: discovery returned json but no ws field found.")
+                app.logger.warning("fetch_cloudlink_ws_url: discovery returned JSON but no WS field found.")
         except Exception as e:
             app.logger.exception(f"fetch_cloudlink_ws_url: discovery request failed: {e}")
 
-    # fallback
-    app.logger.info(f"fetch_cloudlink_ws_url: using fallback CLOUDLINK WS = {FALLBACK_CLOUDLINK_WS}")
-    return FALLBACK_CLOUDLINK_WS
+    # Si discovery échoue, retourne None au lieu d’un fallback
+    app.logger.error("fetch_cloudlink_ws_url: discovery failed and no fallback configured")
+    return None
+
 
 def sanitize_ws_url(url: str) -> str | None:
     """
@@ -215,12 +211,6 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
         return out
 
 def cloudlink_action(action_coro):
-    """
-    Wrapper sync pour les routes Flask.
-    - découvre l'URL (ou fallback)
-    - la sanitize
-    - renvoie erreur explicite si l'URL est invalide
-    """
     raw = fetch_cloudlink_ws_url()
     ws_url = sanitize_ws_url(raw)
     if not ws_url:
@@ -232,6 +222,7 @@ def cloudlink_action(action_coro):
     except Exception as e:
         app.logger.exception("cloudlink_action: asyncio.run raised")
         return {"status": "error", "message": "internal_error", "detail": str(e)}
+
 
 
 # -------------------------
