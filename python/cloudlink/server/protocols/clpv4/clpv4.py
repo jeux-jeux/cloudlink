@@ -243,14 +243,84 @@ class clpv4:
         # Command: delete user
         @server.on_command(cmd="delete_user", schema=cl4_protocol)
         async def delete_user(client, message):
-            if not require_username_set(client, message):
+            import os
+
+            # Si un ADMIN_SECRET est configuré côté serveur, l'exiger dans le message
+            admin_secret_conf = os.getenv("ADMIN_SECRET", "").strip()
+            if admin_secret_conf:
+                if message.get("secret") != admin_secret_conf:
+                    send_statuscode(
+                        client,
+                        statuscodes.refused,
+                        details="Invalid admin secret"
+                    )
+                    return
+
+            # Accept multiple forms: "id", "ids", "target"
+            queries = message.get("id") or message.get("ids") or message.get("target")
+            if queries is None:
+                send_statuscode(
+                    client,
+                    statuscodes.id_required,
+                    details="No id/ids/target provided"
+                )
                 return
-            try:
-                target = server.clients_manager.find_obj(message["id"])
-                await target.disconnect()
-                send_statuscode(client, statuscodes.ok, details=f"User {message['id']} deleted successfully.")
-            except server.clients_manager.exceptions.NoResultsFound:
-                send_statuscode(client, statuscodes.id_not_found, details=f"No user found with id {message['id']}")
+
+            if isinstance(queries, (str, int)):
+                queries = [str(queries)]
+            elif isinstance(queries, (set, tuple)):
+                queries = [str(q) for q in queries]
+            elif isinstance(queries, list):
+                queries = [str(q) for q in queries]
+            else:
+                # fallback: try to cast
+                try:
+                    queries = [str(queries)]
+                except Exception:
+                    send_statuscode(client, statuscodes.syntax, details="Invalid id format")
+                    return
+
+            disconnected = []
+            not_found = []
+
+            for q in queries:
+                try:
+                    target = server.clients_manager.find_obj(q)
+                    # find_obj peut retourner un set (plusieurs clients) ou un unique objet
+                    if isinstance(target, set):
+                        for obj in list(target):
+                            try:
+                                await obj.disconnect()
+                                disconnected.append(obj.snowflake)
+                            except Exception:
+                                # log mais ne stoppe pas la boucle
+                                server.logger.exception(f"Failed to disconnect object {getattr(obj,'snowflake', obj)}")
+                    else:
+                        try:
+                            await target.disconnect()
+                            disconnected.append(target.snowflake)
+                        except Exception:
+                            server.logger.exception(f"Failed to disconnect object {getattr(target,'snowflake', target)}")
+                except server.clients_manager.exceptions.NoResultsFound:
+                    not_found.append(q)
+                except Exception:
+                    server.logger.exception("Unexpected error in delete_user handler")
+                    not_found.append(q)
+
+            # Répondre au demandeur
+            if disconnected:
+                send_statuscode(
+                    client,
+                    statuscodes.ok,
+                    details=f"Deleted users: {disconnected}. Not found: {not_found if not_found else 'none'}"
+                )
+            else:
+                send_statuscode(
+                    client,
+                    statuscodes.id_not_found,
+                    details=f"No matches found for: {queries}"
+                )
+
 
         # --------------------------
         # Toutes les commandes existantes (handshake, ping, gmsg, pmsg, gvar, pvar, setid, link, unlink, direct, etc.)
