@@ -240,12 +240,11 @@ class clpv4:
                     clients = server.copy(clients)
                     server.send_packet(clients, {"cmd": "ulist", "mode": "remove", "val": generate_user_object(client), "rooms": room_id})
 
-        # Command: delete user
         @server.on_command(cmd="delete_user", schema=cl4_protocol)
         async def delete_user(client, message):
             import os
 
-            # Si un ADMIN_SECRET est configuré côté serveur, l'exiger dans le message
+            # Si ADMIN_SECRET est configuré côté serveur, l'exiger dans le message
             admin_secret_conf = os.getenv("ADMIN_SECRET", "").strip()
             if admin_secret_conf:
                 if message.get("secret") != admin_secret_conf:
@@ -256,7 +255,7 @@ class clpv4:
                     )
                     return
 
-            # Accept multiple forms: "id", "ids", "target"
+            # Supporte "id" | "ids" | "target"
             queries = message.get("id") or message.get("ids") or message.get("target")
             if queries is None:
                 send_statuscode(
@@ -266,14 +265,12 @@ class clpv4:
                 )
                 return
 
+            # Normaliser en liste de strings
             if isinstance(queries, (str, int)):
                 queries = [str(queries)]
-            elif isinstance(queries, (set, tuple)):
-                queries = [str(q) for q in queries]
-            elif isinstance(queries, list):
+            elif isinstance(queries, (set, tuple, list)):
                 queries = [str(q) for q in queries]
             else:
-                # fallback: try to cast
                 try:
                     queries = [str(queries)]
                 except Exception:
@@ -286,28 +283,57 @@ class clpv4:
             for q in queries:
                 try:
                     target = server.clients_manager.find_obj(q)
-                    # find_obj peut retourner un set (plusieurs clients) ou un unique objet
-                    if isinstance(target, set):
-                        for obj in list(target):
-                            try:
-                                await obj.disconnect()
-                                disconnected.append(obj.snowflake)
-                            except Exception:
-                                # log mais ne stoppe pas la boucle
-                                server.logger.exception(f"Failed to disconnect object {getattr(obj,'snowflake', obj)}")
-                    else:
-                        try:
-                            await target.disconnect()
-                            disconnected.append(target.snowflake)
-                        except Exception:
-                            server.logger.exception(f"Failed to disconnect object {getattr(target,'snowflake', target)}")
                 except server.clients_manager.exceptions.NoResultsFound:
                     not_found.append(q)
+                    continue
                 except Exception:
-                    server.logger.exception("Unexpected error in delete_user handler")
+                    server.logger.exception("Unexpected error while finding object")
                     not_found.append(q)
+                    continue
 
-            # Répondre au demandeur
+                # target peut être un set (plusieurs clients) ou un unique objet
+                targets = target if isinstance(target, set) else {target}
+
+                for obj in list(targets):
+                    try:
+                        # Priorité : obj.disconnect() (ancienne API), ensuite obj.close() (websockets),
+                        # sinon demander au server de fermer la connexion (non await).
+                        did_disconnect = False
+
+                        if hasattr(obj, "disconnect") and callable(obj.disconnect):
+                            try:
+                                await obj.disconnect()
+                                did_disconnect = True
+                            except TypeError:
+                                # disconnect() n'était pas awaitable, essayer sans await
+                                try:
+                                    obj.disconnect()
+                                    did_disconnect = True
+                                except Exception:
+                                    pass
+
+                        if not did_disconnect and hasattr(obj, "close") and callable(obj.close):
+                            try:
+                                await obj.close()
+                                did_disconnect = True
+                            except TypeError:
+                                # close() n'est pas awaitable ? on ignore
+                                pass
+
+                        if not did_disconnect:
+                            # fallback : demander au serveur de fermer (schedule)
+                            try:
+                                server.close_connection(obj, code=4003, reason="Deleted by admin")
+                                did_disconnect = True
+                            except Exception:
+                                server.logger.exception("server.close_connection failed for object")
+
+                        disconnected.append(getattr(obj, "snowflake", str(getattr(obj, "id", q))))
+                    except Exception:
+                        server.logger.exception(f"Failed to disconnect object {getattr(obj,'snowflake', getattr(obj,'id', q))}")
+                        not_found.append(q)
+
+            # Réponse au demandeur
             if disconnected:
                 send_statuscode(
                     client,
@@ -321,14 +347,6 @@ class clpv4:
                     details=f"No matches found for: {queries}"
                 )
 
-
-        # --------------------------
-        # Toutes les commandes existantes (handshake, ping, gmsg, pmsg, gvar, pvar, setid, link, unlink, direct, etc.)
-        # Conserver exactement le code original que tu m’avais fourni pour ces commandes
-        # --------------------------
-        # NOTE : Pour la version finale, tout le code de 800 lignes original doit être collé ici, inchangé, à part l’ajout ci-dessus
-
-        # The CLPv4 command set
 
         @server.on_command(cmd="handshake", schema=cl4_protocol)
         async def on_handshake(client, message):
