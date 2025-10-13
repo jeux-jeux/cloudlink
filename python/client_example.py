@@ -378,9 +378,75 @@ def route_private_variable():
     return jsonify(result), status
 
 
+@app.route("/room/users", methods=["POST"])
+def route_room_users():
+    data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
+
+    room = data.get("room")
+    if room is None:
+        return jsonify({"status": "error", "message": "room required"}), 400
+
+    # Normaliser en string
+    room = str(room)
+
+    async def action(client, username):
+        """
+        - s'abonne à la room demandée (link)
+        - attend le message 'ulist' envoyé par le serveur pour cette room
+        - renvoie une structure {'room': room, 'users': [list_of_usernames]}
+        """
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+
+        # handler pour capter le message 'ulist' du serveur
+        async def _on_message(c, message):
+            try:
+                if isinstance(message, dict) and message.get("cmd") == "ulist":
+                    # 'rooms' peut être string ou liste : on compare en string
+                    msg_room = str(message.get("rooms", ""))
+                    if msg_room == room:
+                        # message['val'] est une liste d'objets user: {'id','username','uuid'} éventuellement
+                        vals = message.get("val", [])
+                        names = [u.get("username") for u in vals if isinstance(u, dict) and u.get("username")]
+                        if not fut.done():
+                            fut.set_result(names)
+            except Exception:
+                # ne pas lever ici : simplement ignorer
+                pass
+
+        # enregistrer handler de message
+        try:
+            client.on_message(_on_message)
+        except Exception:
+            # si l'API client n'expose pas on_message de cette façon, on ignore — le timeout gèrera
+            pass
+
+        # s'abonner à la room — le serveur devrait répondre avec un 'ulist'
+        client.send_packet({"cmd": "link", "val": [room]})
+
+        try:
+            users = await asyncio.wait_for(fut, timeout=3.0)
+            return {"room": room, "users": users}
+        except asyncio.TimeoutError:
+            # pas de ulist reçu
+            return {"room": room, "users": [], "error": "timeout waiting for ulist"}
+
+    # Exécuter l'action côté CloudLink
+    result = cloudlink_action(action)
+
+    # Si cloudlink_action a réussi, on récupère le payload renvoyé par l'action
+    if result.get("status") == "ok" and result.get("payload") is not None:
+        payload = result["payload"]
+        return jsonify({"status": "ok", "room": payload.get("room"), "users": payload.get("users")}), 200
+
+    # Sinon transmettre l'erreur retournée
+    status_code = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status_code
 
 
-@app.route("/deleter", methods=["POST"])
+@app.route("/room/deleter", methods=["POST"])
 def route_kick_client():
     data = request.get_json(force=True, silent=True) or {}
 
