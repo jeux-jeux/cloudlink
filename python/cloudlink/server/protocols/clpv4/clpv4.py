@@ -422,6 +422,73 @@ class clpv4:
                         else:
                                 server.send_packet(clients, tmp_message)
 
+        @server.on_command(cmd="pvar", schema=cl4_protocol)
+        async def on_pvar(client, message):
+                # Validate schema
+                if not valid(client, message, cl4_protocol.pvar):
+                        return
+
+                if not require_username_set(client, message):
+                        return
+
+                # Gather rooms to send to
+                rooms = gather_rooms(client, message)
+                if not rooms:
+                        rooms = client.rooms
+
+                any_results_found = False
+
+                # Parcourir les rooms où envoyer la variable
+                async for room in server.async_iterable(rooms):
+
+                        # Ignorer la room "default"
+                        if room == "default":
+                                server.logger.warning(f"[PVAR] Ignoré: variable vers 'default' depuis {client.snowflake}")
+                                continue
+
+                        # Empêcher accès à une room non jointe
+                        if room not in client.rooms:
+                                send_statuscode(
+                                        client,
+                                        statuscodes.room_not_joined,
+                                        details=f'Attempted to access room {room} while not joined.',
+                                        message=message
+                                )
+                                return
+
+                        # Trouver les clients cibles (par ID)
+                        clients = await server.rooms_manager.get_specific_in_room(room, cl4_protocol, message["id"])
+                        if not len(clients):
+                                continue
+
+                        any_results_found = True
+
+                        # Construire la variable à envoyer
+                        tmp_message = {
+                                "cmd": "pvar",
+                                "name": message.get("name"),
+                                "val": message.get("val"),
+                                "origin": generate_user_object(client),
+                                "rooms": room
+                        }
+
+                        # Diffuser à la cible
+                        server.send_packet(clients, tmp_message)
+
+                # Si aucun client trouvé
+                if not any_results_found:
+                        send_statuscode(
+                                client,
+                                statuscodes.id_not_found,
+                                details=f'No matches found: {message['id']}',
+                                message=message
+                        )
+                        return
+
+                # OK final
+                send_statuscode(client, statuscodes.ok, message=message)
+
+		
         @server.on_command(cmd="setid", schema=cl4_protocol)
         async def on_setid(client, message):
             # Validate schema
