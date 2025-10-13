@@ -148,22 +148,40 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
             # set_username
             await asyncio.wait_for(client.protocol.set_username(username), timeout=USERNAME_TIMEOUT)
 
-            # run action
-            await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
+            # run action — on capture la valeur de retour dans result["payload"]
+            try:
+                returned = await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
+                result["payload"] = returned
+            except asyncio.TimeoutError:
+                result["error"] = "action timeout"
+                result["payload"] = None
+                app.logger.warning("cloudlink_action_async: action timeout")
 
             # small delay to let client flush outgoing messages
             await asyncio.sleep(0.15)
 
-            # action terminée, on se déconnecte
-            client.disconnect()
+            # action terminée, on se déconnecte (si possible)
+            try:
+                await client.disconnect()
+            except TypeError:
+                # disconnect() n'est pas awaitable : appeler sans await
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
+            except Exception:
+                # certains objets client n'ont pas disconnect(); ignorer
+                pass
 
-            # résultat OK
-            result["ok"] = True
-            app.logger.debug("cloudlink_action_async: action completed OK")
+            # résultat OK si pas d'erreur
+            if not result.get("error"):
+                result["ok"] = True
+                app.logger.debug("cloudlink_action_async: action completed OK")
         except Exception as e:
             result["error"] = str(e)
             result["trace"] = traceback.format_exc()
             app.logger.exception("cloudlink_action_async: exception inside on_connect")
+
 
     @client.on_disconnect
     async def _on_disconnect():
