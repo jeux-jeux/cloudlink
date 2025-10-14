@@ -417,7 +417,7 @@ def route_get_userlist():
     return jsonify(result)
 
         # s'abonner à la room — le serveur devrait répondre avec un 'ulist'
-        client.send_packet({"cmd": "link", "val": [room]})
+    client.send_packet({"cmd": "link", "val": [room]})
 
         try:
             users = await asyncio.wait_for(fut, timeout=3.0)
