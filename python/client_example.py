@@ -397,49 +397,24 @@ def route_private_variable():
 
 
 @app.route("/room/users", methods=["POST"])
-def route_room_users():
+def route_get_userlist():
     data = request.get_json(force=True, silent=True) or {}
+
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
 
     room = data.get("room")
-    if room is None:
+    if not room:
         return jsonify({"status": "error", "message": "room required"}), 400
 
-    # Normaliser en string
-    room = str(room)
-
     async def action(client, username):
-        """
-        - s'abonne à la room demandée (link)
-        - attend le message 'ulist' envoyé par le serveur pour cette room
-        - renvoie une structure {'room': room, 'users': [list_of_usernames]}
-        """
-        loop = asyncio.get_running_loop()
-        fut = loop.create_future()
+        client.send_packet({
+            "cmd": "get_userlist",
+            "room": room
+        })
 
-        # handler pour capter le message 'ulist' du serveur
-        async def _on_message(c, message):
-            try:
-                if isinstance(message, dict) and message.get("cmd") == "ulist":
-                    # 'rooms' peut être string ou liste : on compare en string
-                    msg_room = str(message.get("rooms", ""))
-                    if msg_room == room:
-                        # message['val'] est une liste d'objets user: {'id','username','uuid'} éventuellement
-                        vals = message.get("val", [])
-                        names = [u.get("username") for u in vals if isinstance(u, dict) and u.get("username")]
-                        if not fut.done():
-                            fut.set_result(names)
-            except Exception:
-                # ne pas lever ici : simplement ignorer
-                pass
-
-        # enregistrer handler de message
-        try:
-            client.on_message(_on_message)
-        except Exception:
-            # si l'API client n'expose pas on_message de cette façon, on ignore — le timeout gèrera
-            pass
+    result = cloudlink_action(action)
+    return jsonify(result)
 
         # s'abonner à la room — le serveur devrait répondre avec un 'ulist'
         client.send_packet({"cmd": "link", "val": [room]})
