@@ -134,97 +134,109 @@ def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
 # Core CloudLink runner (avec timeouts & protections)
 # -------------------------
 
-async def action(client, username):
-    """
-    Envoie get_userlist et récupère la prochaine réponse 'ulist' via le callback
-    d'événements du client (on_message / on_packet). Évite d'appeler ws.recv()
-    directement pour ne pas entrer en conflit avec la boucle de réception interne.
-    """
-    loop = asyncio.get_running_loop()
-    fut: asyncio.Future = loop.create_future()
+async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION_TIMEOUT):
+    app.logger.debug(f"cloudlink_action_async: start host={ws_url}")
+    client = cl_client()
+    finished_thread = threading.Event()
+    result = {"ok": False, "error": None, "username": None, "trace": None}
 
-    # Normalise la room en str
-    room_str = str(room)
+    @client.on_connect
+    async def _on_connect():
+        app.logger.debug("cloudlink_action_async: on_connect called")
+        try:
+            username = str(random.randint(100_000_000, 999_999_999))
+            result["username"] = username
 
-    # Handler qui acceptera soit un dict déjà parsé, soit une chaîne JSON
-    def make_handler():
-        def _handler(*args, **kwargs):
-            # Le client peut appeler le handler avec (packet) ou (client, packet)
-            pkt = None
-            if len(args) == 1:
-                pkt = args[0]
-            elif len(args) >= 2:
-                pkt = args[1]
-            elif "packet" in kwargs:
-                pkt = kwargs["packet"]
+            # set_username (avec timeout)
+            await asyncio.wait_for(client.protocol.set_username(username), timeout=USERNAME_TIMEOUT)
 
-            # Si on reçoit une chaîne, tenter de parser JSON
-            if isinstance(pkt, str):
-                try:
-                    import json as _json
-                    pkt = _json.loads(pkt)
-                except Exception:
-                    return
+            # run action (avec timeout)
+            await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
 
-            # Vérifier que c'est bien le packet attendu
+            # petite pause pour laisser les messages partir
+            await asyncio.sleep(0.15)
+
+            # tenter un disconnect propre (safe)
             try:
-                if isinstance(pkt, dict) and pkt.get("cmd") == "ulist" and str(pkt.get("rooms")) == room_str:
-                    if not fut.done():
-                        fut.set_result(pkt.get("val", []))
+                disconnect_fn = getattr(client, "disconnect", None)
+                if disconnect_fn is not None:
+                    maybe = disconnect_fn()
+                    if asyncio.iscoroutine(maybe):
+                        await maybe
+                else:
+                    # fallback try close()
+                    close_fn = getattr(client, "close", None)
+                    if close_fn is not None:
+                        maybe = close_fn()
+                        if asyncio.iscoroutine(maybe):
+                            await maybe
             except Exception:
-                # ne pas faire planter le handler
+                app.logger.exception("cloudlink_action_async: disconnect failed (ignored)")
+
+            result["ok"] = True
+            app.logger.debug("cloudlink_action_async: action completed OK")
+        except Exception as e:
+            result["error"] = str(e)
+            result["trace"] = traceback.format_exc()
+            app.logger.exception("cloudlink_action_async: exception inside on_connect")
+        finally:
+            try:
+                finished_thread.set()
+            except Exception:
                 pass
 
-        return _handler
-
-    handler = make_handler()
-    registered = False
-    unregister_possible = []
-    # Tentatives d'enregistrement (ordre : on_message, on_packet)
-    try:
-        if hasattr(client, "on_message"):
-            # API similaire à @client.on_message (méthode d'enregistrement)
-            client.on_message(handler)
-            registered = True
-            unregister_possible.append("on_message")
-    except Exception:
-        registered = False
-
-    if not registered:
+    @client.on_disconnect
+    async def _on_disconnect():
+        app.logger.debug("cloudlink_action_async: on_disconnect -> set finished_thread")
         try:
-            if hasattr(client, "on_packet"):
-                client.on_packet(handler)
-                registered = True
-                unregister_possible.append("on_packet")
+            finished_thread.set()
         except Exception:
-            registered = False
+            pass
 
-    if not registered:
-        # Aucun hook dispo : on ne peut pas lire sans conflit de recv
-        raise RuntimeError(
-            "Client library doesn't expose on_message/on_packet to capture incoming packets. "
-            "Can't wait for ulist without concurrent recv."
-        )
+    def run_client():
+        try:
+            try:
+                client.ws.connect = functools.partial(websockets.connect, extra_headers=WS_EXTRA_HEADERS)
+            except Exception as e:
+                app.logger.warning(f"cloudlink_action_async: monkeypatch client.ws.connect failed: {e}")
 
-    # Envoie la commande au serveur
-    client.send_packet({"cmd": "get_userlist", "room": room_str})
+            app.logger.debug(f"cloudlink_action_async: client.run(host={ws_url}) starting")
+            client.run(host=ws_url)
+            app.logger.debug("cloudlink_action_async: client.run returned")
+            try:
+                finished_thread.set()
+            except Exception:
+                pass
+        except Exception as e:
+            result["error"] = str(e)
+            result["trace"] = traceback.format_exc()
+            app.logger.exception("cloudlink_action_async: exception in run_client")
+            try:
+                finished_thread.set()
+            except Exception:
+                pass
 
-    # Attendre la réponse via le futur mis par le handler
+    thread = threading.Thread(target=run_client, daemon=True)
+    thread.start()
+
+    # Wait with overall timeout
+    loop = asyncio.get_running_loop()
     try:
-        users = await asyncio.wait_for(fut, timeout=4.0)
-        return users
+        await asyncio.wait_for(loop.run_in_executor(None, finished_thread.wait), timeout=total_timeout)
     except asyncio.TimeoutError:
-        raise RuntimeError("Timeout waiting for ulist response from server")
-    finally:
-        # Tentative de "désinscription" si la lib fournit une API d'off :
-        # on essaye des noms courants (si présents).
-        for off_name in ("off_message", "remove_on_message", "remove_listener", "off_packet", "remove_handler"):
-            if hasattr(client, off_name):
-                try:
-                    getattr(client, off_name)(handler)
-                except Exception:
-                    pass
+        app.logger.warning("cloudlink_action_async: timeout waiting for client to finish")
+        out = {"status": "error", "username": result.get("username"), "detail": "timeout waiting for disconnect"}
+        if result.get("trace"):
+            out["trace"] = result.get("trace")
+        return out
 
+    if result.get("ok"):
+        return {"status": "ok", "username": result.get("username")}
+    else:
+        out = {"status": "error", "username": result.get("username"), "detail": result.get("error")}
+        if result.get("trace"):
+            out["trace"] = result.get("trace")
+        return out
 
 
 def cloudlink_action(action_coro):
@@ -239,6 +251,7 @@ def cloudlink_action(action_coro):
     except Exception as e:
         app.logger.exception("cloudlink_action: asyncio.run raised")
         return {"status": "error", "message": "internal_error", "detail": str(e)}
+
 
 
 
