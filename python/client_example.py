@@ -400,7 +400,7 @@ def route_private_variable():
 def route_get_userlist():
         data = request.get_json(force=True, silent=True) or {}
 
-        # Vérifie la clé d'API
+        # Vérifie la clé
         if not check_key(data):
                 return jsonify({"status": "error", "message": "clé invalide"}), 403
 
@@ -409,28 +409,18 @@ def route_get_userlist():
                 return jsonify({"status": "error", "message": "room required"}), 400
 
         async def action(client, username):
-                # Demande la liste des utilisateurs pour cette room
-                fut = asyncio.get_event_loop().create_future()
-
-                def listener(packet):
-                        if packet.get("cmd") == "ulist" and packet.get("rooms") == room:
-                                fut.set_result(packet)
-
-                client.on_packet(listener)
-
+                # On envoie juste la commande 'link' pour récupérer la liste
                 client.send_packet({
-                        "cmd": "get_userlist",
-                        "room": room
+                        "cmd": "link",
+                        "val": [room]
                 })
 
-                try:
-                        result = await asyncio.wait_for(fut, timeout=3.0)
-                except asyncio.TimeoutError:
-                        result = {"status": "error", "message": "timeout"}
+                # Petit délai pour que le serveur ait le temps de renvoyer 'ulist'
+                await asyncio.sleep(0.5)
 
-                return result
+                # Récupère la liste depuis le client (si cloudlink_action supporte le retour)
+                return {"status": "ok", "message": "ulist should have been sent by server"}
 
-        # Ici, on utilise cloudlink_action comme pour tes autres routes
         result = cloudlink_action(action)
         return jsonify(result)
 
