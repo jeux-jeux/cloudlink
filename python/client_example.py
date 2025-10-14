@@ -413,31 +413,25 @@ def route_get_userlist():
             "room": room
         })
 
-    result = cloudlink_action(action)
+        # Crée une future pour attendre la réponse
+        fut = asyncio.get_event_loop().create_future()
+
+        def listener(packet):
+            if packet.get("cmd") == "ulist" and packet.get("rooms") == room:
+                fut.set_result(packet)
+
+        client.on_packet(listener)
+
+        try:
+            result = await asyncio.wait_for(fut, timeout=3.0)
+        except asyncio.TimeoutError:
+            result = {"status": "error", "message": "timeout"}
+
+        return result
+
+    # Ici, on exécute l’action asynchrone depuis une fonction normale Flask
+    result = asyncio.run(action(proxy_client, "system"))
     return jsonify(result)
-
-        # s'abonner à la room — le serveur devrait répondre avec un 'ulist'
-    client.send_packet({"cmd": "link", "val": [room]})
-
-    try:
-        users = await asyncio.wait_for(fut, timeout=3.0)
-        return {"room": room, "users": users}
-    except asyncio.TimeoutError:
-        # pas de ulist reçu
-        return {"room": room, "users": [], "error": "timeout waiting for ulist"}
-
-    # Exécuter l'action côté CloudLink
-    result = cloudlink_action(action)
-
-    # Si cloudlink_action a réussi, on récupère le payload renvoyé par l'action
-    if result.get("status") == "ok" and result.get("payload") is not None:
-        payload = result["payload"]
-        return jsonify({"status": "ok", "room": payload.get("room"), "users": payload.get("users")}), 200
-
-    # Sinon transmettre l'erreur retournée
-    status_code = 200 if result.get("status") == "ok" else 500
-    return jsonify(result), status_code
-
 
 @app.route("/room/deleter", methods=["POST"])
 def route_kick_client():
