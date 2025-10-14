@@ -636,17 +636,17 @@ class clpv4:
 
         async def on_link(client, message):
 			# Après avoir ajouté le client à la room :
-			ulist = []
-			for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
-			    if hasattr(c, "username"):
-		    	    ulist.append({"username": c.username})
+            ulist = []
+            for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
+                if hasattr(c, "username"):
+                    ulist.append({"username": c.username})
 		
 			# Envoi de la liste des utilisateurs de cette room
-			server.send_packet(client, {
-		    	"cmd": "ulist",
-			    "val": ulist,
-			    "rooms": room
-			})
+            server.send_packet(client, {
+                "cmd": "ulist",
+                "val": ulist,
+                "rooms": room
+            })
             # Validate schema
             if not valid(client, message, cl4_protocol.linking):
                 return
