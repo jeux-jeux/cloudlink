@@ -398,31 +398,36 @@ def route_private_variable():
 
 @app.route("/room/users", methods=["POST"])
 def route_get_userlist():
-        data = request.get_json(force=True, silent=True) or {}
+    data = request.get_json(force=True, silent=True) or {}
 
-        # Vérifie la clé
-        if not check_key(data):
-                return jsonify({"status": "error", "message": "clé invalide"}), 403
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
 
-        room = data.get("room")
-        if not room:
-                return jsonify({"status": "error", "message": "room required"}), 400
+    room = data.get("room")
+    if not room:
+        return jsonify({"status": "error", "message": "room required"}), 400
 
-        async def action(client, username):
-                # On envoie juste la commande 'link' pour récupérer la liste
-                client.send_packet({
-                        "cmd": "link",
-                        "val": [room]
-                })
+    async def action(client, username):
+        future = asyncio.get_event_loop().create_future()
 
-                # Petit délai pour que le serveur ait le temps de renvoyer 'ulist'
-                await asyncio.sleep(0.5)
+        # Callback temporaire pour récupérer la réponse serveur
+        def listener(packet):
+            if packet.get("cmd") == "ulist" and packet.get("rooms") == room:
+                if not future.done():
+                    future.set_result(packet.get("val"))
 
-                # Récupère la liste depuis le client (si cloudlink_action supporte le retour)
-                return {"status": "ok", "message": "ulist should have been sent by server"}
+        client.packet_listener = listener  # ou la bonne API de ton client
 
-        result = cloudlink_action(action)
-        return jsonify(result)
+        client.send_packet({"cmd": "get_userlist", "room": room})
+
+        # Attendre la réponse du serveur
+        usernames = await asyncio.wait_for(future, timeout=3.0)
+        return {"status": "ok", "usernames": usernames}
+
+    # Exécute l'action asynchrone et récupère le résultat
+    result = asyncio.run(action(proxy_client, "system"))
+    return jsonify(result)
+
 
 
 @app.route("/room/deleter", methods=["POST"])
