@@ -410,6 +410,10 @@ def route_private_variable():
 
 @app.route("/room/users", methods=["POST"])
 def route_get_userlist():
+    """
+    POST JSON { "room": "<room-id>", "cle": "<cle si requise>" }
+    Retourne JSON { status: "ok", users: [ {username:...}, ... ] } ou une erreur.
+    """
     data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
@@ -418,54 +422,73 @@ def route_get_userlist():
     if not room:
         return jsonify({"status": "error", "message": "room required"}), 400
 
-    async def action(client, username):
-        """
-        Envoie get_userlist et attend le packet ulist correspondant.
-        Retourne la liste d'utilisateurs (list) ou lance une exception si timeout.
-        """
-        # Envoie la commande serveur
-        client.send_packet({"cmd": "get_userlist", "room": str(room)})
+    # Découverte / sanitize de l'URL websocket (réutilise tes helpers)
+    raw = fetch_cloudlink_ws_url()
+    ws_url = sanitize_ws_url(raw)
+    if not ws_url:
+        return jsonify({"status": "error", "message": "invalid_ws_url", "detail": str(raw)}), 500
 
-        # On va tenter de lire directement un message websocket (JSON) du client temporaire.
-        # ATTENTION: adapte `client.client` si dans ton cloudlink client le ws se nomme différemment.
-        ws = getattr(client, "client", None) or getattr(client, "_client", None) or getattr(client, "ws", None)
-        if ws is None:
-            # Si on ne trouve pas le websocket interne, on ne peut pas lire : retourne erreur
-            raise RuntimeError("internal client websocket not accessible (attribute name may differ)")
-
-        # on attend la prochaine trame texte du websocket (timeout)
+    async def ws_job():
+        """
+        Ouvre une connexion websocket indépendante, s'identifie, demande la liste et attend ulist.
+        """
         try:
-            raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+            # Connexion websocket indépendante (même headers que le proxy)
+            async with websockets.connect(ws_url, extra_headers=WS_EXTRA_HEADERS, open_timeout=5) as ws:
+                # 1) Set a random username to satisfy protocol's setid constraint
+                import random, json
+                username = str(random.randint(100_000_000, 999_999_999))
+                await ws.send(json.dumps({"cmd": "setid", "val": username}))
+
+                # small delay to let server process handshake
+                await asyncio.sleep(0.05)
+
+                # 2) Send get_userlist request for the room
+                await ws.send(json.dumps({"cmd": "get_userlist", "room": str(room)}))
+
+                # 3) Wait for ulist response (or statuscode error)
+                timeout = 3.0
+                end = asyncio.get_event_loop().time() + timeout
+                while True:
+                    remaining = end - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError("timeout waiting for ulist")
+
+                    try:
+                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        raise
+                    except Exception as e:
+                        raise RuntimeError(f"ws.recv() error: {e}")
+
+                    try:
+                        pkt = json.loads(raw_msg)
+                    except Exception:
+                        # ignore non-json or unexpected messages
+                        continue
+
+                    # We expect either cmd == "ulist" or cmd == "statuscode" (error)
+                    cmd = pkt.get("cmd")
+                    if cmd == "ulist" and pkt.get("rooms") == str(room):
+                        # pkt["val"] should be the list of user objects
+                        return {"status": "ok", "users": pkt.get("val", [])}
+                    if cmd == "statuscode":
+                        # server could send a statuscode error: return it
+                        return {"status": "error", "message": pkt.get("code"), "details": pkt.get("details")}
+                    # otherwise loop until timeout
+        except asyncio.TimeoutError:
+            return {"status": "error", "message": "timeout waiting for server response"}
         except Exception as e:
-            raise RuntimeError(f"no response from server (timeout or recv error): {e}")
+            return {"status": "error", "message": "exception", "detail": str(e)}
 
-        # tenter parser JSON
-        try:
-            import ujson as _ujson
-        except Exception:
-            import json as _ujson
+    # Run the async job synchronously and forward the result
+    try:
+        result = asyncio.run(ws_job())
+    except Exception as e:
+        return jsonify({"status": "error", "message": "internal_error", "detail": str(e)}), 500
 
-        try:
-            packet = _ujson.loads(raw)
-        except Exception:
-            raise RuntimeError("received non-json or malformed packet")
-
-        # vérifier qu'on a bien ulist et room attendu
-        if packet.get("cmd") == "ulist" and packet.get("rooms") == str(room):
-            return packet.get("val", [])
-        else:
-            # si on a un statuscode OK + ulist manquant, renvoyer statue + vide
-            return {"note": "unexpected packet", "packet": packet}
-
-    # Exécute l'action via cloudlink_action
-    result = cloudlink_action(action)
-    # si la fonction a retourné payload, c'est notre liste
-    if result.get("status") == "ok" and "payload" in result:
-        return jsonify({"status": "ok", "usernames": result["payload"]})
-    else:
-        # retourne l'erreur remontée par cloudlink_action
-        status = 200 if result.get("status") == "ok" else 500
-        return jsonify(result), status
+    status_code = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status_code
 
 
 @app.route("/room/deleter", methods=["POST"])
