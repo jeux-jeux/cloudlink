@@ -677,19 +677,6 @@ class clpv4:
                                 "rooms": room
                         })
 
-                        # Send the full current userlist to the joining client
-                        ulist = []
-                        for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
-                                if hasattr(c, "username"):
-                                        ulist.append({"username": c.username})
-
-                        server.send_packet(client, {
-                                "cmd": "ulist",
-                                "mode": "set",
-                                "val": ulist,
-                                "rooms": room
-                        })
-
                 # Success response
                 send_statuscode(
                         client,
@@ -697,6 +684,33 @@ class clpv4:
                         message=message
                 )
 
+        @server.on_command(cmd="get_userlist", schema=cl4_protocol)
+        async def on_get_userlist(client, message):
+                # Validation de base
+                if not valid(client, message, cl4_protocol):
+                        return
+
+                room = message.get("room")
+                if not room:
+                        send_statuscode(client, statuscodes.invalid_args, message=message)
+                        return
+
+                # Récupère tous les clients de cette room
+                ulist = []
+                for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
+                        if hasattr(c, "username"):
+                                ulist.append({"username": c.username})
+
+                # Envoie la liste des utilisateurs à l’expéditeur
+                server.send_packet(client, {
+                        "cmd": "ulist",
+                        "mode": "set",
+                        "val": ulist,
+                        "rooms": room
+                })
+
+                # Répond au proxy pour terminer la requête
+                send_statuscode(client, statuscodes.ok, message=message)
 
         @server.on_command(cmd="unlink", schema=cl4_protocol)
         async def on_unlink(client, message):
