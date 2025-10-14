@@ -10,6 +10,7 @@ from flask import Flask, request, jsonify
 from cloudlink import client as cl_client
 import websockets
 import logging
+import inspect
 import requests
 
 app = Flask(__name__)
@@ -132,11 +133,26 @@ def ws_handshake_test_sync(url: str, extra_headers=None, timeout=6):
 # -------------------------
 # Core CloudLink runner (avec timeouts & protections)
 # -------------------------
+
 async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION_TIMEOUT):
     app.logger.debug(f"cloudlink_action_async: start host={ws_url}")
     client = cl_client()
     finished_thread = threading.Event()
-    result = {"ok": False, "error": None, "username": None, "trace": None}
+    result = {"ok": False, "error": None, "username": None, "trace": None, "payload": None}
+
+    async def _safe_disconnect(c):
+        try:
+            # some implementations of client.disconnect return an awaitable, some return None
+            res = None
+            try:
+                res = c.disconnect()
+            except Exception:
+                # fallback if disconnect is an async function attribute (unlikely)
+                pass
+            if inspect.isawaitable(res):
+                await res
+        except Exception:
+            app.logger.exception("cloudlink_action_async: safe disconnect failed")
 
     @client.on_connect
     async def _on_connect():
@@ -145,48 +161,43 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
             username = str(random.randint(100_000_000, 999_999_999))
             result["username"] = username
 
-            # set_username
+            # set username (with timeout)
             await asyncio.wait_for(client.protocol.set_username(username), timeout=USERNAME_TIMEOUT)
 
-            # run action — on capture la valeur de retour dans result["payload"]
-            try:
-                returned = await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
-                result["payload"] = returned
-            except asyncio.TimeoutError:
-                result["error"] = "action timeout"
-                result["payload"] = None
-                app.logger.warning("cloudlink_action_async: action timeout")
+            # run action and capture its return value
+            returned = await asyncio.wait_for(action_coro(client, username), timeout=ACTION_TIMEOUT)
+            result["payload"] = returned
 
             # small delay to let client flush outgoing messages
             await asyncio.sleep(0.15)
 
-            # action terminée, on se déconnecte (si possible)
+            # attempt to disconnect (use safe helper)
             try:
-                await client.disconnect()
-            except TypeError:
-                # disconnect() n'est pas awaitable : appeler sans await
-                try:
-                    client.disconnect()
-                except Exception:
-                    pass
+                await _safe_disconnect(client)
             except Exception:
-                # certains objets client n'ont pas disconnect(); ignorer
-                pass
+                app.logger.exception("cloudlink_action_async: disconnect failed after action")
 
-            # résultat OK si pas d'erreur
-            if not result.get("error"):
-                result["ok"] = True
-                app.logger.debug("cloudlink_action_async: action completed OK")
+            # mark OK
+            result["ok"] = True
+            app.logger.debug("cloudlink_action_async: action completed OK")
+
         except Exception as e:
             result["error"] = str(e)
             result["trace"] = traceback.format_exc()
             app.logger.exception("cloudlink_action_async: exception inside on_connect")
-
+            # ensure we try to disconnect if possible
+            try:
+                await _safe_disconnect(client)
+            except Exception:
+                app.logger.exception("cloudlink_action_async: cleanup disconnect failed")
 
     @client.on_disconnect
     async def _on_disconnect():
         app.logger.debug("cloudlink_action_async: on_disconnect -> set finished_thread")
-        finished_thread.set()
+        try:
+            finished_thread.set()
+        except Exception:
+            pass
 
     def run_client():
         try:
@@ -204,7 +215,10 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
             result["error"] = str(e)
             result["trace"] = traceback.format_exc()
             app.logger.exception("cloudlink_action_async: exception in run_client")
-            finished_thread.set()
+            try:
+                finished_thread.set()
+            except Exception:
+                pass
 
     thread = threading.Thread(target=run_client, daemon=True)
     thread.start()
@@ -220,13 +234,18 @@ async def cloudlink_action_async(action_coro, ws_url, total_timeout=TOTAL_ACTION
             out["trace"] = result.get("trace")
         return out
 
+    # If ok, return payload if present
     if result.get("ok"):
-        return {"status": "ok", "username": result.get("username")}
+        out = {"status": "ok", "username": result.get("username")}
+        if result.get("payload") is not None:
+            out["payload"] = result.get("payload")
+        return out
     else:
         out = {"status": "error", "username": result.get("username"), "detail": result.get("error")}
         if result.get("trace"):
             out["trace"] = result.get("trace")
         return out
+
 
 def cloudlink_action(action_coro):
     raw = fetch_cloudlink_ws_url()
@@ -399,7 +418,6 @@ def route_private_variable():
 @app.route("/room/users", methods=["POST"])
 def route_get_userlist():
     data = request.get_json(force=True, silent=True) or {}
-
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
 
@@ -408,26 +426,53 @@ def route_get_userlist():
         return jsonify({"status": "error", "message": "room required"}), 400
 
     async def action(client, username):
-        future = asyncio.get_event_loop().create_future()
+        """
+        Envoie get_userlist et attend le packet ulist correspondant.
+        Retourne la liste d'utilisateurs (list) ou lance une exception si timeout.
+        """
+        # Envoie la commande serveur
+        client.send_packet({"cmd": "get_userlist", "room": str(room)})
 
-        # Callback temporaire pour récupérer la réponse serveur
-        def listener(packet):
-            if packet.get("cmd") == "ulist" and packet.get("rooms") == room:
-                if not future.done():
-                    future.set_result(packet.get("val"))
+        # On va tenter de lire directement un message websocket (JSON) du client temporaire.
+        # ATTENTION: adapte `client.client` si dans ton cloudlink client le ws se nomme différemment.
+        ws = getattr(client, "client", None) or getattr(client, "_client", None) or getattr(client, "ws", None)
+        if ws is None:
+            # Si on ne trouve pas le websocket interne, on ne peut pas lire : retourne erreur
+            raise RuntimeError("internal client websocket not accessible (attribute name may differ)")
 
-        client.packet_listener = listener  # ou la bonne API de ton client
+        # on attend la prochaine trame texte du websocket (timeout)
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+        except Exception as e:
+            raise RuntimeError(f"no response from server (timeout or recv error): {e}")
 
-        client.send_packet({"cmd": "get_userlist", "room": room})
+        # tenter parser JSON
+        try:
+            import ujson as _ujson
+        except Exception:
+            import json as _ujson
 
-        # Attendre la réponse du serveur
-        usernames = await asyncio.wait_for(future, timeout=3.0)
-        return {"status": "ok", "usernames": usernames}
+        try:
+            packet = _ujson.loads(raw)
+        except Exception:
+            raise RuntimeError("received non-json or malformed packet")
 
-    # Exécute l'action asynchrone et récupère le résultat
-    result = asyncio.run(action(proxy_client, "system"))
-    return jsonify(result)
+        # vérifier qu'on a bien ulist et room attendu
+        if packet.get("cmd") == "ulist" and packet.get("rooms") == str(room):
+            return packet.get("val", [])
+        else:
+            # si on a un statuscode OK + ulist manquant, renvoyer statue + vide
+            return {"note": "unexpected packet", "packet": packet}
 
+    # Exécute l'action via cloudlink_action
+    result = cloudlink_action(action)
+    # si la fonction a retourné payload, c'est notre liste
+    if result.get("status") == "ok" and "payload" in result:
+        return jsonify({"status": "ok", "usernames": result["payload"]})
+    else:
+        # retourne l'erreur remontée par cloudlink_action
+        status = 200 if result.get("status") == "ok" else 500
+        return jsonify(result), status
 
 
 @app.route("/room/deleter", methods=["POST"])
