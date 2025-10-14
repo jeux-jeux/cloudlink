@@ -635,7 +635,7 @@ class clpv4:
         @server.on_command(cmd="link", schema=cl4_protocol)
 
 		async def on_link(client, message):
-					# Après avoir ajouté le client à la room :
+			# Après avoir ajouté le client à la room :
 			ulist = []
 			for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
 			    if hasattr(c, "username"):
