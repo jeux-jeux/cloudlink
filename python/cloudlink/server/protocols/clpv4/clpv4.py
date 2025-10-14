@@ -633,77 +633,70 @@ class clpv4:
             )
 
         @server.on_command(cmd="link", schema=cl4_protocol)
-
         async def on_link(client, message):
-			# Après avoir ajouté le client à la room :
-            ulist = []
-            for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
-                if hasattr(c, "username"):
-                    ulist.append({"username": c.username})
-		
-			# Envoi de la liste des utilisateurs de cette room
-            server.send_packet(client, {
-                "cmd": "ulist",
-                "val": ulist,
-                "rooms": room
-            })
-            # Validate schema
-            if not valid(client, message, cl4_protocol.linking):
-                return
+                # Validate schema
+                if not valid(client, message, cl4_protocol.linking):
+                        return
 
-            # Require sending client to have set their username
-            if not require_username_set(client, message):
-                return
+                # Require sending client to have set their username
+                if not require_username_set(client, message):
+                        return
 
-            # Convert to set
-            if type(message["val"]) in [list, str]:
-                if type(message["val"]) == list:
-                    message["val"] = set(message["val"])
-                if type(message["val"]) == str:
-                    message["val"] = {message["val"]}
-            
-            # Unsubscribe from default room if not mentioned
-            if not "default" in message["val"]:
-                server.rooms_manager.unsubscribe(client, "default")
-                
-                # Broadcast userlist state to existing members
-                clients = await server.rooms_manager.get_all_in_rooms("default", cl4_protocol)
-                clients = server.copy(clients)
-                server.send_packet(clients, {
-                    "cmd": "ulist",
-                    "mode": "remove",
-                    "val": generate_user_object(client),
-                    "rooms": "default"
-                })
+                # Convert to set
+                if isinstance(message["val"], list):
+                        message["val"] = set(message["val"])
+                elif isinstance(message["val"], str):
+                        message["val"] = {message["val"]}
 
-            async for room in server.async_iterable(message["val"]):
-                server.rooms_manager.subscribe(client, room)
+                # Unsubscribe from default room if not mentioned
+                if "default" not in message["val"]:
+                        server.rooms_manager.unsubscribe(client, "default")
 
-                # Broadcast userlist state to existing members
-                clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
-                clients = server.copy(clients)
-                clients.remove(client)
-                server.send_packet(clients, {
-                    "cmd": "ulist",
-                    "mode": "add",
-                    "val": generate_user_object(client),
-                    "rooms": room
-                })
+                        # Broadcast userlist state to existing members of default room
+                        clients = await server.rooms_manager.get_all_in_rooms("default", cl4_protocol)
+                        clients = server.copy(clients)
+                        server.send_packet(clients, {
+                                "cmd": "ulist",
+                                "mode": "remove",
+                                "val": generate_user_object(client),
+                                "rooms": "default"
+                        })
 
-                # Notify client of current room state
-                server.send_packet(client, {
-                    "cmd": "ulist",
-                    "mode": "set",
-                    "val": server.rooms_manager.generate_userlist(room, cl4_protocol),
-                    "rooms": room
-                })
+                # Subscribe to each requested room
+                async for room in server.async_iterable(message["val"]):
+                        server.rooms_manager.subscribe(client, room)
 
-            # Attach listener (if present) and broadcast
-            send_statuscode(
-                client,
-                statuscodes.ok,
-                message=message
-            )
+                        # Broadcast to others that this user joined
+                        clients = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
+                        clients = server.copy(clients)
+                        clients.remove(client)
+                        server.send_packet(clients, {
+                                "cmd": "ulist",
+                                "mode": "add",
+                                "val": generate_user_object(client),
+                                "rooms": room
+                        })
+
+                        # Send the full current userlist to the joining client
+                        ulist = []
+                        for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
+                                if hasattr(c, "username"):
+                                        ulist.append({"username": c.username})
+
+                        server.send_packet(client, {
+                                "cmd": "ulist",
+                                "mode": "set",
+                                "val": ulist,
+                                "rooms": room
+                        })
+
+                # Success response
+                send_statuscode(
+                        client,
+                        statuscodes.ok,
+                        message=message
+                )
+
 
         @server.on_command(cmd="unlink", schema=cl4_protocol)
         async def on_unlink(client, message):
