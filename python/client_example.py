@@ -398,40 +398,42 @@ def route_private_variable():
 
 @app.route("/room/users", methods=["POST"])
 def route_get_userlist():
-    data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(force=True, silent=True) or {}
 
-    if not check_key(data):
-        return jsonify({"status": "error", "message": "clé invalide"}), 403
+        # Vérifie la clé d'API
+        if not check_key(data):
+                return jsonify({"status": "error", "message": "clé invalide"}), 403
 
-    room = data.get("room")
-    if not room:
-        return jsonify({"status": "error", "message": "room required"}), 400
+        room = data.get("room")
+        if not room:
+                return jsonify({"status": "error", "message": "room required"}), 400
 
-    async def action(client, username):
-        client.send_packet({
-            "cmd": "get_userlist",
-            "room": room
-        })
+        async def action(client, username):
+                # Demande la liste des utilisateurs pour cette room
+                fut = asyncio.get_event_loop().create_future()
 
-        # Crée une future pour attendre la réponse
-        fut = asyncio.get_event_loop().create_future()
+                def listener(packet):
+                        if packet.get("cmd") == "ulist" and packet.get("rooms") == room:
+                                fut.set_result(packet)
 
-        def listener(packet):
-            if packet.get("cmd") == "ulist" and packet.get("rooms") == room:
-                fut.set_result(packet)
+                client.on_packet(listener)
 
-        client.on_packet(listener)
+                client.send_packet({
+                        "cmd": "get_userlist",
+                        "room": room
+                })
 
-        try:
-            result = await asyncio.wait_for(fut, timeout=3.0)
-        except asyncio.TimeoutError:
-            result = {"status": "error", "message": "timeout"}
+                try:
+                        result = await asyncio.wait_for(fut, timeout=3.0)
+                except asyncio.TimeoutError:
+                        result = {"status": "error", "message": "timeout"}
 
-        return result
+                return result
 
-    # Ici, on exécute l’action asynchrone depuis une fonction normale Flask
-    result = asyncio.run(action(proxy_client, "system"))
-    return jsonify(result)
+        # Ici, on utilise cloudlink_action comme pour tes autres routes
+        result = cloudlink_action(action)
+        return jsonify(result)
+
 
 @app.route("/room/deleter", methods=["POST"])
 def route_kick_client():
