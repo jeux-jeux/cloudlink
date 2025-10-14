@@ -419,12 +419,12 @@ def route_get_userlist():
         # s'abonner à la room — le serveur devrait répondre avec un 'ulist'
     client.send_packet({"cmd": "link", "val": [room]})
 
-        try:
-            users = await asyncio.wait_for(fut, timeout=3.0)
-            return {"room": room, "users": users}
-        except asyncio.TimeoutError:
-            # pas de ulist reçu
-            return {"room": room, "users": [], "error": "timeout waiting for ulist"}
+    try:
+        users = await asyncio.wait_for(fut, timeout=3.0)
+        return {"room": room, "users": users}
+    except asyncio.TimeoutError:
+        # pas de ulist reçu
+        return {"room": room, "users": [], "error": "timeout waiting for ulist"}
 
     # Exécuter l'action côté CloudLink
     result = cloudlink_action(action)
