@@ -683,9 +683,12 @@ class clpv4:
                         statuscodes.ok,
                         message=message
                 )
-        @server.on_command(cmd="get_userlist", schema=cl4_protocol)
+        @server.on_command(cmd="get_userlist", schema=cl4_protocol.linking)
         async def on_get_userlist(client, message):
-                # Pas besoin de validation stricte ici
+                # Validation du schéma
+                if not valid(client, message, cl4_protocol.linking):
+                        return
+
                 room = message.get("room")
                 if not room:
                         send_statuscode(client, statuscodes.invalid_args, message=message)
@@ -697,7 +700,7 @@ class clpv4:
                         if hasattr(c, "username"):
                                 ulist.append({"username": c.username})
 
-                # Envoie la liste des utilisateurs à l’expéditeur
+                # Envoie la liste des utilisateurs au client demandeur
                 server.send_packet(client, {
                         "cmd": "ulist",
                         "mode": "set",
@@ -705,8 +708,9 @@ class clpv4:
                         "rooms": room
                 })
 
-                # Répond au proxy pour terminer la requête
+                # Confirme que la commande s’est bien exécutée
                 send_statuscode(client, statuscodes.ok, message=message)
+
 
 
 
