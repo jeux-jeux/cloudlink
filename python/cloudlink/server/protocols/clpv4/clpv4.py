@@ -683,25 +683,35 @@ class clpv4:
                         statuscodes.ok,
                         message=message
                 )
-        @server.on_command(cmd="get_userlist")
+        @server.on_command(cmd="get_userlist", schema=cl4_protocol)
         async def on_get_userlist(client, message):
-                # Validation manuelle du message
-                if not valid(client, message, cl4_protocol.linking):
-                        send_statuscode(client, statuscodes.invalid_args, message=message)
-                        return
-
+                # vérification minimale (ne pas utiliser valid() si ça provoque SchemaError)
                 room = message.get("room")
-                if not room:
-                        send_statuscode(client, statuscodes.invalid_args, message=message)
+                if not room or not isinstance(room, (str, int)):
+                        send_statuscode(client, statuscodes.id_required, details="Field 'room' missing or invalid", message=message)
                         return
 
-                # Récupère les utilisateurs dans la room demandée
-                ulist = []
-                for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
-                        if hasattr(c, "username"):
-                                ulist.append({"username": c.username})
+                room = str(room)
 
-                # Envoie la liste à l’expéditeur
+                # Récupère tous les clients (objets) dans la room pour ce protocole
+                try:
+                        objs = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
+                except Exception as e:
+                        # protège contre erreurs inattendues côté rooms_manager
+                        server.logger.exception(f"get_userlist: failed to get room {room}: {e}")
+                        send_statuscode(client, statuscodes.internal_error, details=str(e), message=message)
+                        return
+
+                ulist = []
+                for c in objs:
+                        # certains objets peuvent ne pas encore avoir username_set
+                        if getattr(c, "username_set", False) and getattr(c, "username", None):
+                                ulist.append({"username": c.username})
+                        else:
+                                # en l'absence de username, on peut ajouter l'id/snowflake si besoin
+                                ulist.append({"id": c.snowflake})
+
+                # envoi de la réponse (ulist) au client demandeur
                 server.send_packet(client, {
                         "cmd": "ulist",
                         "mode": "set",
@@ -709,11 +719,8 @@ class clpv4:
                         "rooms": room
                 })
 
-                # Confirme le succès
+                # confirmer la bonne exécution au caller (optionnel)
                 send_statuscode(client, statuscodes.ok, message=message)
-
-
-
 
 
         @server.on_command(cmd="unlink", schema=cl4_protocol)
