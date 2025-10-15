@@ -407,89 +407,43 @@ def route_private_variable():
     status = 200 if result.get("status") == "ok" else 500
     return jsonify(result), status
 
-
 @app.route("/room/users", methods=["POST"])
 def route_get_userlist():
-    """
-    POST JSON { "room": "<room-id>", "cle": "<cle si requise>" }
-    Retourne JSON { status: "ok", users: [...] } ou une erreur.
-    """
     data = request.get_json(force=True, silent=True) or {}
+
+    # Vérifie la clé API
     if not check_key(data):
         return jsonify({"status": "error", "message": "clé invalide"}), 403
 
     room = data.get("room")
     if not room:
-        return jsonify({"status": "error", "message": "room required"}), 400
+        return jsonify({"status": "error", "message": "paramètre 'room' manquant"}), 400
 
-    raw = fetch_cloudlink_ws_url()
-    ws_url = sanitize_ws_url(raw)
-    if not ws_url:
-        return jsonify({"status": "error", "message": "invalid_ws_url", "detail": str(raw)}), 500
+    async def action(ws, username):
+        # Étape 1 : rejoindre la room
+        await ws.send(json.dumps({
+            "cmd": "link",
+            "val": [room]
+        }))
+        link_resp = await asyncio.wait_for(ws.recv(), timeout=5.0)
+        logging.debug(f"Réponse link: {link_resp}")
 
-    async def ws_job():
-        import json, random
-        try:
-            async with websockets.connect(ws_url, extra_headers=WS_EXTRA_HEADERS, open_timeout=5) as ws:
-                # s'identifier
-                username = str(random.randint(100_000_000, 999_999_999))
-                await ws.send(json.dumps({"cmd": "setid", "val": username}))
-                await asyncio.sleep(0.05)
+        # Étape 2 : demander la liste des utilisateurs
+        await ws.send(json.dumps({
+            "cmd": "get_userlist",
+            "room": room
+        }))
 
-                # demander la liste
-                await ws.send(json.dumps({"cmd": "get_userlist", "room": str(room)}))
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout=7.0)
+            msg = json.loads(raw)
 
-                # attendre ulist (ou timeout). si on reçoit statuscode 100 (OK) on l'ignore.
-                timeout = 7.0
-                deadline = asyncio.get_event_loop().time() + timeout
-                while True:
-                    remaining = deadline - asyncio.get_event_loop().time()
-                    if remaining <= 0:
-                        return {"status": "error", "message": "timeout waiting for ulist"}
+            # On cherche la réponse 'ulist'
+            if msg.get("cmd") == "ulist":
+                return {"status": "ok", "room": room, "users": msg.get("val", [])}
 
-                    try:
-                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                    except asyncio.TimeoutError:
-                        return {"status": "error", "message": "timeout waiting for ulist"}
-                    except Exception as e:
-                        return {"status": "error", "message": "ws.recv error", "detail": str(e)}
-
-                    # parse
-                    try:
-                        pkt = json.loads(raw_msg)
-                    except Exception:
-                        # ignore malformed/non-json messages
-                        continue
-
-                    cmd = pkt.get("cmd")
-                    # ulist for the requested room -> success
-                    if cmd == "ulist" and str(pkt.get("rooms")) == str(room):
-                        return {"status": "ok", "users": pkt.get("val", [])}
-
-                    # statuscode: if it's OK (100) ignore and keep waiting, otherwise return error
-                    if cmd == "statuscode":
-                        code_id = pkt.get("code_id")
-                        if code_id == 100:
-                            # server ack OK, keep waiting for the actual ulist packet
-                            continue
-                        else:
-                            return {"status": "error", "message": pkt.get("code"), "details": pkt.get("details")}
-
-                    # otherwise keep waiting
-                    continue
-
-        except asyncio.TimeoutError:
-            return {"status": "error", "message": "timeout connecting to ws"}
-        except Exception as e:
-            return {"status": "error", "message": "exception", "detail": str(e)}
-
-    try:
-        result = asyncio.run(ws_job())
-    except Exception as e:
-        return jsonify({"status": "error", "message": "internal_error", "detail": str(e)}), 500
-
-    status_code = 200 if result.get("status") == "ok" else 500
-    return jsonify(result), status_code
+    result = cloudlink_action(action)
+    return jsonify(result)
 
 
 @app.route("/room/deleter", methods=["POST"])
