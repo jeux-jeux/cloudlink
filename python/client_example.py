@@ -440,7 +440,7 @@ def route_get_userlist():
                 await ws.send(json.dumps({"cmd": "get_userlist", "room": str(room)}))
 
                 # attendre ulist (ou timeout). si on reçoit statuscode 100 (OK) on l'ignore.
-                timeout = 3.0
+                timeout = 7.0
                 deadline = asyncio.get_event_loop().time() + timeout
                 while True:
                     remaining = deadline - asyncio.get_event_loop().time()
