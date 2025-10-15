@@ -683,7 +683,7 @@ class clpv4:
                         statuscodes.ok,
                         message=message
                 )
-        @server.on_command(cmd="get_userlist", schema=cl4_protocol.linking)
+        @server.on_command(cmd="get_userlist", schema="linking")
         async def on_get_userlist(client, message):
                 # Validation du schéma
                 if not valid(client, message, cl4_protocol.linking):
