@@ -683,11 +683,11 @@ class clpv4:
                         statuscodes.ok,
                         message=message
                 )
-        @server.on_command(cmd="get_userlist", schema=cl4_protocol.linking)
-        async def on_get_userlist(server, client, message):
-
-                # Validation du schéma
+        @server.on_command(cmd="get_userlist")
+        async def on_get_userlist(client, message):
+                # Validation manuelle du message
                 if not valid(client, message, cl4_protocol.linking):
+                        send_statuscode(client, statuscodes.invalid_args, message=message)
                         return
 
                 room = message.get("room")
@@ -695,13 +695,13 @@ class clpv4:
                         send_statuscode(client, statuscodes.invalid_args, message=message)
                         return
 
-                # Récupère tous les clients de cette room
+                # Récupère les utilisateurs dans la room demandée
                 ulist = []
                 for c in await server.rooms_manager.get_all_in_rooms(room, cl4_protocol):
                         if hasattr(c, "username"):
                                 ulist.append({"username": c.username})
 
-                # Envoie la liste des utilisateurs au client demandeur
+                # Envoie la liste à l’expéditeur
                 server.send_packet(client, {
                         "cmd": "ulist",
                         "mode": "set",
@@ -709,8 +709,9 @@ class clpv4:
                         "rooms": room
                 })
 
-                # Confirme que la commande s’est bien exécutée
+                # Confirme le succès
                 send_statuscode(client, statuscodes.ok, message=message)
+
 
 
 
