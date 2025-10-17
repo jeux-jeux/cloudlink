@@ -728,6 +728,39 @@ class clpv4:
 
                 # confirmer exécution
                 send_statuscode(client, statuscodes.ok, message=message)
+        @server.on_command(cmd="get_rooms", schema=cl4_protocol)
+        async def on_get_rooms(client, message):
+                """
+                Retourne la liste des rooms qui contiennent au moins un client.
+                Réponse envoyée sous forme de paquet `rooms_list` avec "val": [room1, room2, ...]
+                """
+                # (pas besoin de validation poussée)
+                try:
+                        rooms = []
+                        # server.rooms_manager.rooms est un dict room_id -> room_obj
+                        for room_id, room_obj in server.rooms_manager.rooms.items():
+                                # room_obj["clients"] contient protocol -> categories
+                                # on considère la room "non vide" si au moins un protocole présente au moins un client
+                                non_empty = False
+                                for proto, proto_group in room_obj.get("clients", {}).items():
+                                        # proto_group["all"] est un set d'objets clients
+                                        if proto_group.get("all"):
+                                                if len(proto_group["all"]) > 0:
+                                                        non_empty = True
+                                                        break
+                                if non_empty:
+                                        rooms.append(str(room_id))
+
+                        # envoyer la réponse
+                        server.send_packet(client, {
+                                "cmd": "rooms_list",
+                                "val": rooms
+                        })
+
+                        send_statuscode(client, statuscodes.ok, message=message)
+                except Exception as e:
+                        server.logger.exception(f"on_get_rooms: failed to enumerate rooms: {e}")
+                        send_statuscode(client, statuscodes.internal_error, details=str(e), message=message)
 
         @server.on_command(cmd="unlink", schema=cl4_protocol)
         async def on_unlink(client, message):
