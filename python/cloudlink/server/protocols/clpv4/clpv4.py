@@ -685,15 +685,13 @@ class clpv4:
                 )
         @server.on_command(cmd="get_userlist", schema=cl4_protocol)
         async def on_get_userlist(client, message):
-                # Vérification minimale du champ room
+                # validation minimale
                 room = message.get("room")
-                if not room or not isinstance(room, (str, int)):
-                        send_statuscode(client, statuscodes.id_required, details="Field 'room' missing or invalid", message=message)
+                if not room:
+                        send_statuscode(client, statuscodes.id_required, details="Field 'room' missing", message=message)
                         return
-
                 room = str(room)
 
-                # Récupère tous les clients (objets) dans la room pour ce protocole
                 try:
                         objs = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
                 except Exception as e:
@@ -701,47 +699,35 @@ class clpv4:
                         send_statuscode(client, statuscodes.internal_error, details=str(e), message=message)
                         return
 
-                # Construire une liste riche d'objets utilisateurs pour le proxy/app
-                ulist = []
+                users = {}
                 for c in objs:
-                        # Utilise la helper generate_user_object si possible (contenu minimal)
-                        try:
-                                base = generate_user_object(c)  # retourne username/id/uuid selon disponibilité
-                        except Exception:
-                                base = {}
+                        # ne pas renvoyer l'appelant lui-même
+                        if c is client:
+                                continue
 
-                        # Ajoute des champs de debug supplémentaires
-                        item = {
-                                "username": base.get("username"),            # None si absent
-                                "snowflake": getattr(c, "snowflake", None),  # identifiant interne
-                                "uuid": base.get("uuid") or (str(getattr(c, "id", None)) if getattr(c, "id", None) is not None else None),
-                                "id": base.get("id"),                        # parfois présent dans generate_user_object
-                                "ip": None
+                        # collect info
+                        snow = getattr(c, "snowflake", None)
+                        uuid = str(getattr(c, "id", None))
+                        ip = get_client_ip(c) or None
+                        username = getattr(c, "username", None) if getattr(c, "username_set", False) else None
+
+                        key = username if username else (snow if snow else uuid)
+                        users[key] = {
+                                "id": snow,
+                                "uuid": uuid,
+                                "ip": ip
                         }
 
-                        # Essaye de récupérer l'IP via le helper du protocole (si config disponible)
-                        try:
-                                ip = None
-                                if hasattr(self, "get_client_ip"):
-                                        ip = self.get_client_ip(c)
-                                item["ip"] = ip
-                        except Exception:
-                                item["ip"] = None
-
-                        ulist.append(item)
-
-                # Envoi de la réponse (ulist) au client demandeur
+                # envoi de la réponse 'ulist' (map username->info)
                 server.send_packet(client, {
                         "cmd": "ulist",
                         "mode": "set",
-                        "val": ulist,
+                        "val": users,
                         "rooms": room
                 })
 
-                # Confirmer la bonne exécution au caller
+                # confirmer exécution
                 send_statuscode(client, statuscodes.ok, message=message)
-
-
 
         @server.on_command(cmd="unlink", schema=cl4_protocol)
         async def on_unlink(client, message):
