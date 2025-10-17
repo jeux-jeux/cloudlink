@@ -12,7 +12,7 @@ import websockets
 import logging
 import inspect
 import requests
-
+import json
 app = Flask(__name__)
 app.logger.setLevel(logging.DEBUG)
 
@@ -407,6 +407,7 @@ def route_private_variable():
     status = 200 if result.get("status") == "ok" else 500
     return jsonify(result), status
 
+
 @app.route("/room/users", methods=["POST"])
 def route_get_userlist():
     data = request.get_json(force=True, silent=True) or {}
@@ -419,31 +420,59 @@ def route_get_userlist():
     if not room:
         return jsonify({"status": "error", "message": "paramètre 'room' manquant"}), 400
 
-    async def action(ws, username):
-        # Étape 1 : rejoindre la room
-        await ws.send(json.dumps({
-            "cmd": "link",
-            "val": [room]
-        }))
-        link_resp = await asyncio.wait_for(ws.recv(), timeout=5.0)
-        logging.debug(f"Réponse link: {link_resp}")
+    # Découvre et sanitize l'URL websocket
+    raw = fetch_cloudlink_ws_url()
+    ws_url = sanitize_ws_url(raw)
+    if not ws_url:
+        return jsonify({"status": "error", "message": "invalid_ws_url", "detail": str(raw)}), 500
 
-        # Étape 2 : demander la liste des utilisateurs
-        await ws.send(json.dumps({
-            "cmd": "get_userlist",
-            "room": room
-        }))
+    async def fetch_users_via_ws(ws_url, room):
+        username = f"proxy_{random.randint(100_000_000, 999_999_999)}"
+        try:
+            async with websockets.connect(ws_url, extra_headers=WS_EXTRA_HEADERS, open_timeout=5) as ws:
+                # 1) setid (nécessaire : on a des require_username_set sur certaines commandes)
+                await ws.send(json.dumps({"cmd": "setid", "val": username}))
 
-        while True:
-            raw = await asyncio.wait_for(ws.recv(), timeout=7.0)
-            msg = json.loads(raw)
+                # attendre confirmation (statuscode OK code_id == 100)
+                try:
+                    while True:
+                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        msg = json.loads(raw_msg)
+                        if msg.get("cmd") == "statuscode" and msg.get("code_id") == 100:
+                            break
+                except asyncio.TimeoutError:
+                    return {"status": "error", "detail": "no response to setid"}
 
-            # On cherche la réponse 'ulist'
-            if msg.get("cmd") == "ulist":
-                return {"status": "ok", "room": room, "users": msg.get("val", [])}
+                # 2) link -> join the room so get_userlist works normally
+                await ws.send(json.dumps({"cmd": "link", "val": [str(room)]}))
 
-    result = cloudlink_action(action)
-    return jsonify(result)
+                # consume events until we see the ulist 'set' for the joined room (or timeout)
+                try:
+                    deadline = asyncio.get_event_loop().time() + 5.0
+                    while True:
+                        timeout = max(0.1, deadline - asyncio.get_event_loop().time())
+                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                        msg = json.loads(raw_msg)
+
+                        # on peut recevoir plusieurs paquets (statuscode, ulist, etc.)
+                        if msg.get("cmd") == "ulist" and str(msg.get("rooms")) == str(room):
+                            # mode peut être "set" ou "add"; on prend val
+                            return {"status": "ok", "room": str(room), "users": msg.get("val", [])}
+                        # sinon continuer à lire jusqu'au timeout
+                except asyncio.TimeoutError:
+                    return {"status": "error", "detail": "timeout waiting for ulist"}
+        except Exception as e:
+            return {"status": "error", "detail": str(e)}
+
+    # exécute l'async et retourne la réponse
+    try:
+        out = asyncio.run(fetch_users_via_ws(ws_url, room))
+    except Exception as e:
+        out = {"status": "error", "detail": str(e)}
+
+    status_code = 200 if out.get("status") == "ok" else 500
+    return jsonify(out), status_code
+
 
 
 @app.route("/room/deleter", methods=["POST"])
