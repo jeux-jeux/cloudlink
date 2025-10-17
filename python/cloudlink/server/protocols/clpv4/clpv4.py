@@ -685,7 +685,7 @@ class clpv4:
                 )
         @server.on_command(cmd="get_userlist", schema=cl4_protocol)
         async def on_get_userlist(client, message):
-                # vérification minimale (ne pas utiliser valid() si ça provoque SchemaError)
+                # Vérification minimale du champ room
                 room = message.get("room")
                 if not room or not isinstance(room, (str, int)):
                         send_statuscode(client, statuscodes.id_required, details="Field 'room' missing or invalid", message=message)
@@ -697,21 +697,40 @@ class clpv4:
                 try:
                         objs = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
                 except Exception as e:
-                        # protège contre erreurs inattendues côté rooms_manager
                         server.logger.exception(f"get_userlist: failed to get room {room}: {e}")
                         send_statuscode(client, statuscodes.internal_error, details=str(e), message=message)
                         return
 
+                # Construire une liste riche d'objets utilisateurs pour le proxy/app
                 ulist = []
                 for c in objs:
-                        # certains objets peuvent ne pas encore avoir username_set
-                        if getattr(c, "username_set", False) and getattr(c, "username", None):
-                                ulist.append({"username": c.username})
-                        else:
-                                # en l'absence de username, on peut ajouter l'id/snowflake si besoin
-                                ulist.append({"id": c.snowflake})
+                        # Utilise la helper generate_user_object si possible (contenu minimal)
+                        try:
+                                base = generate_user_object(c)  # retourne username/id/uuid selon disponibilité
+                        except Exception:
+                                base = {}
 
-                # envoi de la réponse (ulist) au client demandeur
+                        # Ajoute des champs de debug supplémentaires
+                        item = {
+                                "username": base.get("username"),            # None si absent
+                                "snowflake": getattr(c, "snowflake", None),  # identifiant interne
+                                "uuid": base.get("uuid") or (str(getattr(c, "id", None)) if getattr(c, "id", None) is not None else None),
+                                "id": base.get("id"),                        # parfois présent dans generate_user_object
+                                "ip": None
+                        }
+
+                        # Essaye de récupérer l'IP via le helper du protocole (si config disponible)
+                        try:
+                                ip = None
+                                if hasattr(self, "get_client_ip"):
+                                        ip = self.get_client_ip(c)
+                                item["ip"] = ip
+                        except Exception:
+                                item["ip"] = None
+
+                        ulist.append(item)
+
+                # Envoi de la réponse (ulist) au client demandeur
                 server.send_packet(client, {
                         "cmd": "ulist",
                         "mode": "set",
@@ -719,8 +738,9 @@ class clpv4:
                         "rooms": room
                 })
 
-                # confirmer la bonne exécution au caller (optionnel)
+                # Confirmer la bonne exécution au caller
                 send_statuscode(client, statuscodes.ok, message=message)
+
 
 
         @server.on_command(cmd="unlink", schema=cl4_protocol)
