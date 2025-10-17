@@ -408,6 +408,11 @@ def route_private_variable():
     return jsonify(result), status
 
 
+import json  # ajoute si absent en haut du fichier
+import asyncio
+import random
+import websockets
+
 @app.route("/room/users", methods=["POST"])
 def route_get_userlist():
     data = request.get_json(force=True, silent=True) or {}
@@ -420,58 +425,78 @@ def route_get_userlist():
     if not room:
         return jsonify({"status": "error", "message": "paramètre 'room' manquant"}), 400
 
-    # Découvre et sanitize l'URL websocket
+    # timeout total (s) pour la requête websocket
+    TIMEOUT = 7.0
+
+    # Utilise la découverte + sanitize déjà existantes dans ton fichier
     raw = fetch_cloudlink_ws_url()
     ws_url = sanitize_ws_url(raw)
     if not ws_url:
         return jsonify({"status": "error", "message": "invalid_ws_url", "detail": str(raw)}), 500
 
-    async def fetch_users_via_ws(ws_url, room):
-        username = f"proxy_{random.randint(100_000_000, 999_999_999)}"
+    async def _fetch():
+        # ouvre une connexion websocket « brute » indépendante du cl_client
         try:
-            async with websockets.connect(ws_url, extra_headers=WS_EXTRA_HEADERS, open_timeout=5) as ws:
-                # 1) setid (nécessaire : on a des require_username_set sur certaines commandes)
-                await ws.send(json.dumps({"cmd": "setid", "val": username}))
+            async with websockets.connect(ws_url, extra_headers=WS_EXTRA_HEADERS, open_timeout=TIMEOUT) as ws:
+                # setid : donne un username temporaire pour être sûr d'avoir un client identifié
+                tmp_username = str(random.randint(100_000_000, 999_999_999))
+                await ws.send(json.dumps({"cmd": "setid", "val": tmp_username}))
 
-                # attendre confirmation (statuscode OK code_id == 100)
-                try:
+                # Consommer rapidement quelques messages initiaux (handshake, client_obj, ulist set par défaut...), sans bloquer
+                async def drain_initial_messages(deadline):
                     while True:
-                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
-                        msg = json.loads(raw_msg)
-                        if msg.get("cmd") == "statuscode" and msg.get("code_id") == 100:
-                            break
-                except asyncio.TimeoutError:
-                    return {"status": "error", "detail": "no response to setid"}
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=0.3)
+                        except asyncio.TimeoutError:
+                            return
+                        except Exception:
+                            return
+                        # ignore messages
 
-                # 2) link -> join the room so get_userlist works normally
+                await drain_initial_messages(TIMEOUT)
+
+                # link -> joindre la room demandée
                 await ws.send(json.dumps({"cmd": "link", "val": [str(room)]}))
 
-                # consume events until we see the ulist 'set' for the joined room (or timeout)
-                try:
-                    deadline = asyncio.get_event_loop().time() + 5.0
-                    while True:
-                        timeout = max(0.1, deadline - asyncio.get_event_loop().time())
-                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=timeout)
-                        msg = json.loads(raw_msg)
+                # demander la liste d'utilisateurs (commande serveur custom get_userlist)
+                await ws.send(json.dumps({"cmd": "get_userlist", "room": str(room)}))
 
-                        # on peut recevoir plusieurs paquets (statuscode, ulist, etc.)
-                        if msg.get("cmd") == "ulist" and str(msg.get("rooms")) == str(room):
-                            # mode peut être "set" ou "add"; on prend val
-                            return {"status": "ok", "room": str(room), "users": msg.get("val", [])}
-                        # sinon continuer à lire jusqu'au timeout
-                except asyncio.TimeoutError:
-                    return {"status": "error", "detail": "timeout waiting for ulist"}
+                # attendre la réponse 'ulist' correspondante
+                end_at = asyncio.get_running_loop().time() + TIMEOUT
+                while True:
+                    timeout_left = end_at - asyncio.get_running_loop().time()
+                    if timeout_left <= 0:
+                        raise asyncio.TimeoutError("timeout waiting for ulist")
+                    raw = await asyncio.wait_for(ws.recv(), timeout=timeout_left)
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        continue
+                    if msg.get("cmd") == "ulist" and str(msg.get("rooms")) == str(room):
+                        # renvoyer la liste (val peut être list d'objets)
+                        return {"status": "ok", "room": room, "users": msg.get("val", [])}
+                    # ignore autres paquets jusqu'à timeout
+
+        except asyncio.TimeoutError:
+            return {"status": "error", "message": "timeout waiting for ulist"}
+        except websockets.InvalidStatusCode as e:
+            return {"status": "error", "message": f"ws handshake failed: {e}"}
         except Exception as e:
-            return {"status": "error", "detail": str(e)}
+            return {"status": "error", "message": "ws error", "detail": str(e)}
 
-    # exécute l'async et retourne la réponse
+    # run sync wrapper
     try:
-        out = asyncio.run(fetch_users_via_ws(ws_url, room))
-    except Exception as e:
-        out = {"status": "error", "detail": str(e)}
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(_fetch())
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
 
-    status_code = 200 if out.get("status") == "ok" else 500
-    return jsonify(out), status_code
+    status = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status
 
 
 
