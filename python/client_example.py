@@ -408,11 +408,68 @@ def route_private_variable():
     return jsonify(result), status
 
 
-import json
-import asyncio
-import websockets
+# --- route Flask (proxy) : retourne les rooms non vides ---
+@app.route("/get/lists", methods=["POST"])
+def route_list_rooms():
+    data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
 
-@app.route("/room/users", methods=["POST"])
+    # Optionnel : timeout en secondes (paramètre query ?timeout=5)
+    timeout = float(request.args.get("timeout", "5.0"))
+
+    async def _task():
+        raw = fetch_cloudlink_ws_url()
+        ws_url = sanitize_ws_url(raw)
+        if not ws_url:
+            return {"status": "error", "message": "invalid_ws_url", "detail": str(raw)}
+
+        try:
+            async with websockets.connect(ws_url, extra_headers=WS_EXTRA_HEADERS, open_timeout=5) as ws:
+                app.logger.debug(f"route_list_rooms: connected to {ws_url}, requesting rooms list")
+
+                # envoyer la commande get_rooms (server doit implémenter ce handler)
+                await ws.send(json.dumps({"cmd": "get_rooms"}))
+
+                # attendre la réponse rooms_list
+                end = asyncio.get_event_loop().time() + timeout
+                while True:
+                    remaining = end - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        return {"status": "error", "message": "timeout waiting for rooms_list"}
+                    try:
+                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        return {"status": "error", "message": "timeout waiting for rooms_list"}
+
+                    try:
+                        msg = json.loads(raw_msg)
+                    except Exception:
+                        continue
+
+                    if msg.get("cmd") == "rooms_list":
+                        rooms = msg.get("val", [])
+                        # normaliser en liste de strings
+                        if isinstance(rooms, (list, tuple, set)):
+                            rooms = [str(r) for r in rooms]
+                        elif isinstance(rooms, dict):
+                            rooms = list(rooms.keys())
+                        else:
+                            rooms = []
+
+                        return {"status": "ok", "rooms": rooms}
+
+                # unreachable
+        except Exception as e:
+            app.logger.exception("route_list_rooms: websocket error")
+            return {"status": "error", "message": "ws_error", "detail": str(e)}
+
+    result = asyncio.run(_task())
+    status = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status
+
+
+@app.route("/get/users", methods=["POST"])
 def route_get_userlist():
     data = request.get_json(force=True, silent=True) or {}
     if not check_key(data):
