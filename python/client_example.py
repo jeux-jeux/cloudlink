@@ -408,54 +408,115 @@ def route_private_variable():
     return jsonify(result), status
 
 
+import json
+import asyncio
+import websockets
+
 @app.route("/room/users", methods=["POST"])
-        @server.on_command(cmd="get_userlist", schema=cl4_protocol)
-        async def on_get_userlist(client, message):
-                # validation minimale
-                room = message.get("room")
-                if not room:
-                        send_statuscode(client, statuscodes.id_required, details="Field 'room' missing", message=message)
-                        return
-                room = str(room)
+def route_get_userlist():
+    data = request.get_json(force=True, silent=True) or {}
+    if not check_key(data):
+        return jsonify({"status": "error", "message": "clé invalide"}), 403
 
-                try:
-                        objs = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
-                except Exception as e:
-                        server.logger.exception(f"get_userlist: failed to get room {room}: {e}")
-                        send_statuscode(client, statuscodes.internal_error, details=str(e), message=message)
-                        return
+    room = data.get("room")
+    if room is None:
+        return jsonify({"status": "error", "message": "paramètre 'room' manquant"}), 400
 
-                users = {}
-                for c in objs:
-                        # ne pas renvoyer l'appelant lui-même
-                        if c is client:
-                                continue
+    # Normaliser la room : str/int -> str, [one] -> str ; refuser listes >1
+    if isinstance(room, (list, tuple, set)):
+        if len(room) == 0:
+            return jsonify({"status": "error", "message": "room vide"}), 400
+        if len(room) > 1:
+            return jsonify({"status": "error", "message": "une seule room attendue"}), 400
+        room_val = str(next(iter(room)))
+    elif isinstance(room, (str, int)):
+        room_val = str(room)
+    else:
+        return jsonify({"status": "error", "message": "room invalide"}), 400
 
-                        # collect info
-                        snow = getattr(c, "snowflake", None)
-                        uuid = str(getattr(c, "id", None))
-                        ip = get_client_ip(c) or None
-                        username = getattr(c, "username", None) if getattr(c, "username_set", False) else None
+    async def _task():
+        raw = fetch_cloudlink_ws_url()
+        ws_url = sanitize_ws_url(raw)
+        if not ws_url:
+            return {"status": "error", "message": "invalid_ws_url", "detail": str(raw)}
 
-                        key = username if username else (snow if snow else uuid)
-                        users[key] = {
-                                "id": snow,
-                                "uuid": uuid,
-                                "ip": ip
-                        }
+        # headers définis globalement : WS_EXTRA_HEADERS
+        try:
+            # ouvrir connexion websocket brute (séparée du cl_client)
+            async with websockets.connect(ws_url, extra_headers=WS_EXTRA_HEADERS, open_timeout=5) as ws:
+                app.logger.debug(f"route_get_userlist: connected to {ws_url}, linking to {room_val!r}")
 
-                # envoi de la réponse 'ulist' (map username->info)
-                server.send_packet(client, {
-                        "cmd": "ulist",
-                        "mode": "set",
-                        "val": users,
-                        "rooms": room
-                })
+                # envoyer link en STRING (très important)
+                await ws.send(json.dumps({"cmd": "link", "val": room_val}))
+                # laisser le serveur traiter l'abonnement
+                await asyncio.sleep(0.18)
 
-                # confirmer exécution
-                send_statuscode(client, statuscodes.ok, message=message)
+                # demander la userlist pour la room (server enverra un 'ulist')
+                await ws.send(json.dumps({"cmd": "get_userlist", "room": room_val}))
 
+                proxy_snowflake = None
+                # on lit jusqu'à timeout pour récupérer 'ulist'
+                end_time = asyncio.get_event_loop().time() + 5.0
+                while True:
+                    timeout = end_time - asyncio.get_event_loop().time()
+                    if timeout <= 0:
+                        return {"status": "error", "message": "timeout waiting for ulist"}
+                    try:
+                        raw_msg = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        return {"status": "error", "message": "timeout waiting for ulist"}
 
+                    try:
+                        msg = json.loads(raw_msg)
+                    except Exception:
+                        # ignorer non-json
+                        continue
+
+                    # capture client object packet pour retrouver le snowflake du proxy
+                    if msg.get("cmd") == "client_obj":
+                        proxy_snowflake = msg.get("val", {}).get("id") or proxy_snowflake
+                        continue
+
+                    # réponse avec la liste d'utilisateurs attendue
+                    if msg.get("cmd") == "ulist":
+                        ulist = msg.get("val", {})
+                        # si le serveur renvoie une liste, convertir en dict si possible
+                        if isinstance(ulist, list):
+                            # tenter de normaliser en dict : si éléments sont {username: {...}} -> fusionner
+                            norm = {}
+                            for item in ulist:
+                                if isinstance(item, dict):
+                                    # cas attendu : {"username": X} ou {"id":...}
+                                    if "username" in item:
+                                        key = item["username"]
+                                        norm[key] = item
+                                    elif "id" in item:
+                                        norm[item["id"]] = item
+                                # ignorer autres formats
+                            ulist = norm
+
+                        # retirer la propre entrée du proxy si présente (comparaison sur snowflake)
+                        if proxy_snowflake and isinstance(ulist, dict):
+                            to_remove = []
+                            for k, v in ulist.items():
+                                try:
+                                    if v.get("id") == proxy_snowflake:
+                                        to_remove.append(k)
+                                except Exception:
+                                    pass
+                            for k in to_remove:
+                                ulist.pop(k, None)
+
+                        return {"status": "ok", "room": room_val, "users": ulist}
+
+                # fin while
+        except Exception as e:
+            app.logger.exception("route_get_userlist: websocket error")
+            return {"status": "error", "message": "ws_error", "detail": str(e)}
+
+    result = asyncio.run(_task())
+    status = 200 if result.get("status") == "ok" else 500
+    return jsonify(result), status
 
 
 @app.route("/room/deleter", methods=["POST"])
