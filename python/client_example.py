@@ -408,95 +408,53 @@ def route_private_variable():
     return jsonify(result), status
 
 
-import json  # ajoute si absent en haut du fichier
-import asyncio
-import random
-import websockets
-
 @app.route("/room/users", methods=["POST"])
-def route_get_userlist():
-    data = request.get_json(force=True, silent=True) or {}
+        @server.on_command(cmd="get_userlist", schema=cl4_protocol)
+        async def on_get_userlist(client, message):
+                # validation minimale
+                room = message.get("room")
+                if not room:
+                        send_statuscode(client, statuscodes.id_required, details="Field 'room' missing", message=message)
+                        return
+                room = str(room)
 
-    # Vérifie la clé API
-    if not check_key(data):
-        return jsonify({"status": "error", "message": "clé invalide"}), 403
+                try:
+                        objs = await server.rooms_manager.get_all_in_rooms(room, cl4_protocol)
+                except Exception as e:
+                        server.logger.exception(f"get_userlist: failed to get room {room}: {e}")
+                        send_statuscode(client, statuscodes.internal_error, details=str(e), message=message)
+                        return
 
-    room = data.get("room")
-    if not room:
-        return jsonify({"status": "error", "message": "paramètre 'room' manquant"}), 400
+                users = {}
+                for c in objs:
+                        # ne pas renvoyer l'appelant lui-même
+                        if c is client:
+                                continue
 
-    # timeout total (s) pour la requête websocket
-    TIMEOUT = 7.0
+                        # collect info
+                        snow = getattr(c, "snowflake", None)
+                        uuid = str(getattr(c, "id", None))
+                        ip = get_client_ip(c) or None
+                        username = getattr(c, "username", None) if getattr(c, "username_set", False) else None
 
-    # Utilise la découverte + sanitize déjà existantes dans ton fichier
-    raw = fetch_cloudlink_ws_url()
-    ws_url = sanitize_ws_url(raw)
-    if not ws_url:
-        return jsonify({"status": "error", "message": "invalid_ws_url", "detail": str(raw)}), 500
+                        key = username if username else (snow if snow else uuid)
+                        users[key] = {
+                                "id": snow,
+                                "uuid": uuid,
+                                "ip": ip
+                        }
 
-    async def _fetch():
-        # ouvre une connexion websocket « brute » indépendante du cl_client
-        try:
-            async with websockets.connect(ws_url, extra_headers=WS_EXTRA_HEADERS, open_timeout=TIMEOUT) as ws:
-                # setid : donne un username temporaire pour être sûr d'avoir un client identifié
-                tmp_username = str(random.randint(100_000_000, 999_999_999))
-                await ws.send(json.dumps({"cmd": "setid", "val": tmp_username}))
+                # envoi de la réponse 'ulist' (map username->info)
+                server.send_packet(client, {
+                        "cmd": "ulist",
+                        "mode": "set",
+                        "val": users,
+                        "rooms": room
+                })
 
-                # Consommer rapidement quelques messages initiaux (handshake, client_obj, ulist set par défaut...), sans bloquer
-                async def drain_initial_messages(deadline):
-                    while True:
-                        try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=0.3)
-                        except asyncio.TimeoutError:
-                            return
-                        except Exception:
-                            return
-                        # ignore messages
+                # confirmer exécution
+                send_statuscode(client, statuscodes.ok, message=message)
 
-                await drain_initial_messages(TIMEOUT)
-
-                # link -> joindre la room demandée
-                await ws.send(json.dumps({"cmd": "link", "val": [str(room)]}))
-
-                # demander la liste d'utilisateurs (commande serveur custom get_userlist)
-                await ws.send(json.dumps({"cmd": "get_userlist", "room": str(room)}))
-
-                # attendre la réponse 'ulist' correspondante
-                end_at = asyncio.get_running_loop().time() + TIMEOUT
-                while True:
-                    timeout_left = end_at - asyncio.get_running_loop().time()
-                    if timeout_left <= 0:
-                        raise asyncio.TimeoutError("timeout waiting for ulist")
-                    raw = await asyncio.wait_for(ws.recv(), timeout=timeout_left)
-                    try:
-                        msg = json.loads(raw)
-                    except Exception:
-                        continue
-                    if msg.get("cmd") == "ulist" and str(msg.get("rooms")) == str(room):
-                        # renvoyer la liste (val peut être list d'objets)
-                        return {"status": "ok", "room": room, "users": msg.get("val", [])}
-                    # ignore autres paquets jusqu'à timeout
-
-        except asyncio.TimeoutError:
-            return {"status": "error", "message": "timeout waiting for ulist"}
-        except websockets.InvalidStatusCode as e:
-            return {"status": "error", "message": f"ws handshake failed: {e}"}
-        except Exception as e:
-            return {"status": "error", "message": "ws error", "detail": str(e)}
-
-    # run sync wrapper
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(_fetch())
-    finally:
-        try:
-            loop.close()
-        except Exception:
-            pass
-
-    status = 200 if result.get("status") == "ok" else 500
-    return jsonify(result), status
 
 
 
