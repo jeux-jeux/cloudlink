@@ -594,7 +594,7 @@ class server:
             origin = None
             if hasattr(client, "request_headers") and client.request_headers:
                 # websockets.WebSocketServerProtocol stores request_headers as a CIMultiDict-like mapping
-                origin = client.request_headers.post("Origin") or client.request_headers.post("origin")
+                origin = client.request_headers.get("Origin") or client.request_headers.get("origin")
         except Exception:
             origin = None
 
