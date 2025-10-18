@@ -580,7 +580,7 @@ class server:
                                 return set(items)
                 return set()
 
-        _raw = _get_raw_allowed(test, contenu)
+        _raw = _get_raw_allowed(url, cle)
         _parsed_set = _parse_allowed(_raw) if _raw is not None else set()
 
         # Construction de la variable finale sous la forme exacte que tu veux
@@ -594,7 +594,7 @@ class server:
             origin = None
             if hasattr(client, "request_headers") and client.request_headers:
                 # websockets.WebSocketServerProtocol stores request_headers as a CIMultiDict-like mapping
-                origin = client.request_headers.get("Origin") or client.request_headers.get("origin")
+                origin = client.request_headers.post("Origin") or client.request_headers.post("origin")
         except Exception:
             origin = None
 
