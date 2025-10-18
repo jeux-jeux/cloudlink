@@ -5,6 +5,9 @@ import logging
 import time
 from copy import copy
 from snowflake import SnowflakeGenerator
+import requests
+import ast
+import json
 
 # Import websockets and SSL support
 import websockets
@@ -523,15 +526,67 @@ class server:
         # Origin check (added)
         # -----------------------
         # List of allowed origins. Add or remove as needed.
-        allowed_origins = {
-            "tw-editor://.",
-            "https://jeux-jeux.github.io",
-            "http://localhost:3000",
-            "https://cloudlink-manager.onrender.com",
-            "https://cloudlink-manager.onrender.com/",
-            "https://turbowarp.org/",
-            "https://turbowarp.org",
-        }
+        import requests
+        import ast
+        import json
+
+        # Variables à remplacer par tes valeurs
+        url = os.getenv("URL")   # <-- variable 'test'
+        cle = os.getenv("CLE")               # <-- variable 'contenu'
+
+        def _get_raw_allowed(test_url: str, cle_val: str, timeout: int = 10):
+                headers = {"Content-Type": "application/json"}
+                resp = None
+                try:
+                        resp = requests.post(url, json={"cle": cle}, headers=headers, timeout=timeout)
+                except Exception:
+                        resp = None
+                if resp is None or resp.status_code != 200:
+                        try:
+                                resp = requests.post(url, params={"cle": cle}, headers=headers, timeout=timeout)
+                        except Exception:
+                                resp = None
+                if resp is None:
+                        return None
+                try:
+                        return resp.json()
+                except ValueError:
+                        return None
+
+        def _parse_allowed(raw_json):
+                if not isinstance(raw_json, dict):
+                        return set()
+                for key in ("allowed_origin", "allowed_origins", "allowed"):
+                        if key in raw_json:
+                                raw = raw_json[key]
+                                break
+                else:
+                        return set()
+
+                if isinstance(raw, (list, tuple, set)):
+                        return set(map(str, raw))
+                if isinstance(raw, str):
+                        s = raw.strip()
+                        try:
+                                parsed = ast.literal_eval(s)
+                                if isinstance(parsed, (set, list, tuple)):
+                                        return set(map(str, parsed))
+                                if isinstance(parsed, str):
+                                        items = [p.strip().strip("'\"") for p in parsed.split(",") if p.strip()]
+                                        return set(items)
+                        except (ValueError, SyntaxError):
+                                items = [p.strip().strip("'\"") for p in s.strip("{}[]").split(",") if p.strip()]
+                                return set(items)
+                return set()
+
+        _raw = _get_raw_allowed(test, contenu)
+        _parsed_set = _parse_allowed(_raw) if _raw is not None else set()
+
+        # Construction de la variable finale sous la forme exacte que tu veux
+        _entries = ",\n            ".join(json.dumps(item) for item in _parsed_set)
+        _assignment = "allowed_origins = {\n            " + _entries + ",\n        }"
+        exec(_assignment, globals())
+
         # Get origin from request headers if available
         origin = None
         try:
