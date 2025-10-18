@@ -8,6 +8,7 @@ from snowflake import SnowflakeGenerator
 import requests
 import ast
 import json
+import os
 
 # Import websockets and SSL support
 import websockets
