@@ -20,7 +20,7 @@ app.logger.setLevel(logging.DEBUG)
 # Configuration
 # -------------------------
 # CLE attendue (pour authorisation des routes sending/checking)
-ENV_KEY_NAME = "CLE"
+CLE = os.getenv("CLE")
 # URL du service d'auth/discovery (optionnel)
 PROXY_AUTH_URL = os.getenv("PROXY")  # ex: https://proxy-authentification-v3.onrender.com/
 
@@ -53,10 +53,10 @@ def fetch_cloudlink_ws_url():
     if PROXY_AUTH_URL:
         try:
             app.logger.debug(f"fetch_cloudlink_ws_url: requesting discovery from {PROXY_AUTH_URL}")
-            resp = requests.get(PROXY_AUTH_URL, timeout=5, headers={"Origin": "https://cloudlink-manager.onrender.com"})
+            resp = requests.post(PROXY_AUTH_URL, json={"cle": cle}, timeout=5 )
             resp.raise_for_status()
             j = resp.json()
-            url = j.get("web_socket_server") or j.get("websocket") or j.get("web_socket_url") or j.get("url")
+            url = j.get("web_socket_server")
             if url:
                 app.logger.info(f"fetch_cloudlink_ws_url: discovered websocket url: {url}")
                 return url
