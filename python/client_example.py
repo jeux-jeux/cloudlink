@@ -46,6 +46,12 @@ def check_key(data: dict) -> bool:
     received = (data or {}).get("cle")
     ok = (received == expected)
     if not ok:
+        resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle}, timeout=5 )
+        resp.raise_for_status()
+        j = resp.json()
+        access = j.get("access")
+        ok = (received == access)
+    if not ok:
         app.logger.warning("check_key: invalid or missing cle in request body.")
     return ok
 
