@@ -38,7 +38,7 @@ TOTAL_ACTION_TIMEOUT = int(os.getenv("TOTAL_ACTION_TIMEOUT", "25"))
 # -------------------------
 def check_key(data: dict) -> bool:
     """Vérifie que le corps JSON contient une clé 'cle' valide."""
-    expected = os.getenv(ENV_KEY_NAME)
+    expected = cle
     # Si aucune clé attendue configurée, autorise (pratique pour tests)
     if not expected:
         app.logger.debug("No expected CLE configured in env -> skipping check_key (open mode).")
