@@ -540,11 +540,13 @@ class server:
                 resp = None
                 try:
                         resp = requests.post(url, json={"cle": cle}, headers=headers, timeout=timeout)
+                        level = j.get("level")
                 except Exception:
                         resp = None
                 if resp is None or resp.status_code != 200:
                         try:
                                 resp = requests.post(url, params={"cle": cle}, headers=headers, timeout=timeout)
+                                level = j.get("level")
                         except Exception:
                                 resp = None
                 if resp is None:
@@ -611,7 +613,7 @@ class server:
         # If origin is not allowed, close connection immediately
         # NOTE: change this logic if you want to allow all origins in some environments
         if ok_ultra == "false" and ok == "false":
-            if not :
+            if not level == "all":
                 self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
                 try:
                     await client.close(code=4003, reason="Origin non autorisé")
