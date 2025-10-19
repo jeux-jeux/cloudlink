@@ -598,9 +598,15 @@ class server:
         except Exception:
             origin = None
 
+        if origin not in allowed_origins:
+            resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle}, timeout=5 )
+            resp.raise_for_status()
+            j = resp.json()
+            access = j.get("access")
+            ok = (origin == access)
         # If origin is not allowed, close connection immediately
         # NOTE: change this logic if you want to allow all origins in some environments
-        if origin not in allowed_origins:
+        if not ok:
             self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
             try:
                 await client.close(code=4003, reason="Origin non autorisé")
