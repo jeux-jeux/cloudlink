@@ -610,6 +610,14 @@ class server:
             ok_ultra = access
         else:
             ok = "true"
+
+        if ok_ultra == "false" and access == "nothing" and ok == "true":
+            self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
+            try:
+                await client.close(code=4003, reason="Origin non autorisé")
+            except Exception:
+                pass
+            return
         # If origin is not allowed, close connection immediately
         # NOTE: change this logic if you want to allow all origins in some environments
         if ok_ultra == "false" and ok == "false":
