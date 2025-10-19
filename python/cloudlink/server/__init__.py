@@ -603,10 +603,12 @@ class server:
             resp.raise_for_status()
             j = resp.json()
             access = j.get("access")
-            ok = (origin == access)
+            ok = access
+        else:
+            ok = "true"
         # If origin is not allowed, close connection immediately
         # NOTE: change this logic if you want to allow all origins in some environments
-        if not ok:
+        if ok == "false":
             self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
             try:
                 await client.close(code=4003, reason="Origin non autorisé")
