@@ -547,7 +547,47 @@ class server:
                                 resp = requests.post(test_url, params={"cle": cle_val}, headers=headers, timeout=timeout)
                         except Exception:
                                 resp = None
-                if resp
+                if resp is None:
+                        return None
+                try:
+                        return resp.json()
+                except ValueError:
+                        return None
+
+        def _parse_allowed(raw_json):
+                if not isinstance(raw_json, dict):
+                        return set()
+                for key in ("allowed_origin", "allowed_origins", "allowed"):
+                        if key in raw_json:
+                                raw = raw_json[key]
+                                break
+                else:
+                        return set()
+
+                if isinstance(raw, (list, tuple, set)):
+                        return set(map(str, raw))
+                if isinstance(raw, str):
+                        s = raw.strip()
+                        try:
+                                parsed = ast.literal_eval(s)
+                                if isinstance(parsed, (set, list, tuple)):
+                                        return set(map(str, parsed))
+                                if isinstance(parsed, str):
+                                        items = [p.strip().strip("'\"") for p in parsed.split(",") if p.strip()]
+                                        return set(items)
+                        except (ValueError, SyntaxError):
+                                items = [p.strip().strip("'\"") for p in s.strip("{}[]").split(",") if p.strip()]
+                                return set(items)
+                return set()
+
+        _raw = _Get_raw_allowed(url, cle)
+        _parsed_set = _parse_allowed(_raw) if _raw is not None else set()
+
+        # Construction de la variable finale (sans exec)
+        try:
+                allowed_origins = set(_parsed_set)
+        except Exception:
+                allowed_origins = set()
 
 
         # Get origin from request headers if available
