@@ -583,6 +583,8 @@ class server:
         _raw = _Get_raw_allowed(url, cle)
         _parsed_set = _parse_allowed(_raw) if _raw is not None else set()
         level = _raw.get("level")
+        cle_by_headers = _raw.get("cle")
+        cle_level = _raw.get("cle_level")
 
 
         # Construction de la variable finale (sans exec)
@@ -600,7 +602,12 @@ class server:
                 # websockets.WebSocketServerProtocol stores request_headers as a CIMultiDict-like mapping
                 origin = client.request_headers.get("Origin") or client.request_headers.get("origin")
         except Exception:
-            origin = None
+            try:
+                origin = None
+                if hasattr(client, "request_headers") and client.request_headers:
+                    cle = client.request_headers.get("cle")
+            except Exception:
+                origin = None
 
         resp = requests.post(f"{url}cle-ultra", json={"cle": cle}, timeout=5 )
         resp.raise_for_status()
