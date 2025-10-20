@@ -539,17 +539,19 @@ class server:
                 headers = {"Content-Type": "application/json"}
                 resp = None
                 try:
-                        resp = requests.post(test_url, json={"cle": cle_val}, headers=headers, timeout=timeout)
+                        resp = requests.post(url, json={"cle": cle_val}, headers=headers, timeout=timeout)
                 except Exception:
                         resp = None
                 if resp is None or resp.status_code != 200:
                         try:
-                                resp = requests.post(test_url, params={"cle": cle_val}, headers=headers, timeout=timeout)
+                                resp = requests.post(url, params={"cle": cle_val}, headers=headers, timeout=timeout)
                         except Exception:
                                 resp = None
                 if resp is None:
                         return None
                 try:
+                        level = resp.json()
+                        level = level.get("level")
                         return resp.json()
                 except ValueError:
                         return None
