@@ -613,7 +613,7 @@ class server:
         # If origin is not allowed, close connection immediately
         # NOTE: change this logic if you want to allow all origins in some environments
         if ok_ultra == "false":
-            if level == "nothing" or level == "origin" ok == "false":
+            if level == "nothing" or level == "origin" and ok == "false":
                 self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
                 try:
                     await client.close(code=4003, reason="Origin non autorisé")
