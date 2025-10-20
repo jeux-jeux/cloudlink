@@ -600,28 +600,20 @@ class server:
         except Exception:
             origin = None
 
-        ok = "false"
-        ok_ultra = "false"
+        resp = requests.post(f"{url}cle-ultra", json={"cle": cle}, timeout=5 )
+        resp.raise_for_status()
+        j = resp.json()
+        ok_ultra = j.get("access")
+        
         if origin not in allowed_origins:
-            resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle}, timeout=5 )
-            resp.raise_for_status()
-            j = resp.json()
-            access = j.get("access")
-            ok_ultra = access
+            ok = "false"
         else:
             ok = "true"
 
-        if ok_ultra == "false" and access == "nothing" and ok == "true":
-            self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
-            try:
-                await client.close(code=4003, reason="Origin non autorisé")
-            except Exception:
-                pass
-            return
         # If origin is not allowed, close connection immediately
         # NOTE: change this logic if you want to allow all origins in some environments
-        if ok_ultra == "false" and ok == "false":
-            if not level == "all":
+        if ok_ultra == "false":
+            if level == "nothing" or level == "origin" ok == "false":
                 self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
                 try:
                     await client.close(code=4003, reason="Origin non autorisé")
