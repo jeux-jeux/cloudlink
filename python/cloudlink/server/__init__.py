@@ -550,8 +550,6 @@ class server:
                 if resp is None:
                         return None
                 try:
-                        level = resp.json()
-                        level = level.get("level")
                         return resp.json()
                 except ValueError:
                         return None
@@ -584,6 +582,8 @@ class server:
 
         _raw = _Get_raw_allowed(url, cle)
         _parsed_set = _parse_allowed(_raw) if _raw is not None else set()
+        level = _raw.get("level")
+
 
         # Construction de la variable finale (sans exec)
         try:
