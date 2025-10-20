@@ -535,7 +535,7 @@ class server:
         url = os.getenv("URL")
         cle = os.getenv("CLE")
 
-        def _Get_raw_allowed(test_url: str, cle_val: str, timeout: int = 10):
+        def _Get_raw_allowed(url: str, cle: str, timeout: int = 10):
                 headers = {"Content-Type": "application/json"}
                 resp = None
                 try:
