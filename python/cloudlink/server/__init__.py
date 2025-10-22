@@ -611,7 +611,8 @@ class server:
         resp.raise_for_status()
         j = resp.json()
         level = j.get("level")
-        
+
+        cle = client.request_headers.get("Cle") or client.request_headers.get("cle")
         # Verificaation cle ultra
         resp = requests.post(f"{url}cle-ultra", json={"cle": cle}, timeout=5 )
         resp.raise_for_status()
