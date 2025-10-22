@@ -21,7 +21,6 @@ app.logger.setLevel(logging.DEBUG)
 # -------------------------
 # CLE attendue (pour authorisation des routes sending/checking)
 CLE = os.getenv("CLE")
-CLE_WEBSOCKET = os.getenv("CLE_WEBSOCKET")
 # URL du service d'auth/discovery (optionnel)
 PROXY_AUTH_URL = os.getenv("PROXY")  # ex: https://proxy-authentification-v3.onrender.com/
 
@@ -34,33 +33,51 @@ TOTAL_ACTION_TIMEOUT = int(os.getenv("TOTAL_ACTION_TIMEOUT", "25"))
 # Helpers
 # -------------------------
 def check_key(data: dict) -> bool:
-    # Si aucune clé attendue configurée, autorise (pratique pour tests)
-    if not expected:
-        app.logger.debug("No expected CLE configured in env -> skipping check_key (open mode).")
-        return False
     cle_received = (data or {}).get("cle")
-
-    resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle_received}, timeout=5 )
+    app.logger.debug(f"fetch_cloudlink_ws_url: requesting discovery from {PROXY_AUTH_URL}")
+    resp = requests.post(PROXY_AUTH_URL, json={"cle": CLE}, timeout=5 )
     resp.raise_for_status()
     j = resp.json()
-    access = j.get("access")
-    if access == "false":
-        resp = requests.post(f"{PROXY_AUTH_URL}cle-iphone", json={"cle": cle_received}, timeout=5 )
+    level = j.get("level")
+    if level == "code":
+        app.logger.debug("No expected CLE configured in env -> skipping check_key (open mode).")
+         return False
+      
+        cle_received = (data or {}).get("cle")
+        resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle_received}, timeout=5 )
         resp.raise_for_status()
         j = resp.json()
         access = j.get("access")
-    if access == "false":
-        app.logger.warning("check_key: invalid or missing cle in request body.")
-        ok = False
-    else:
+    
+        if access == "false":
+            resp = requests.post(f"{PROXY_AUTH_URL}cle-iphone", json={"cle": cle_received}, timeout=5 )
+            resp.raise_for_status()
+            j = resp.json()
+            access = j.get("access")
+        if access == "false":
+            app.logger.warning("check_key: invalid or missing cle in request body.")
+            ok = False
+        else:
+            ok = True
+    elif level == "all":
         ok = True
+    else:
+        cle_received = (data or {}).get("cle")
+        resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle_received}, timeout=5 )
+        resp.raise_for_status()
+        j = resp.json()
+        access = j.get("access")
+        if not access == "false":
+            ok = True
+        else:
+            ok = False
     return ok
 
 def fetch_cloudlink_ws_url():
     if PROXY_AUTH_URL:
         try:
             app.logger.debug(f"fetch_cloudlink_ws_url: requesting discovery from {PROXY_AUTH_URL}")
-            resp = requests.post(PROXY_AUTH_URL, json={"cle": cle}, timeout=5 )
+            resp = requests.post(PROXY_AUTH_URL, json={"cle": CLE}, timeout=5 )
             resp.raise_for_status()
             j = resp.json()
             url = j.get("web_socket_server")
