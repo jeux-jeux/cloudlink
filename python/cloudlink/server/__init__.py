@@ -579,14 +579,6 @@ class server:
                                 items = [p.strip().strip("'\"") for p in s.strip("{}[]").split(",") if p.strip()]
                                 return set(items)
                 return set()
-
-        _raw = _Get_raw_allowed(url, cle)
-        _parsed_set = _parse_allowed(_raw) if _raw is not None else set()
-        level = _raw.get("level")
-        cle_by_headers = _raw.get("cle")
-        cle_level = _raw.get("cle_level")
-
-
         # Construction de la variable finale (sans exec)
         try:
                 allowed_origins = set(_parsed_set)
@@ -605,23 +597,31 @@ class server:
             try:
                 origin = None
                 if hasattr(client, "request_headers") and client.request_headers:
-                    cle = client.request_headers.get("cle")
+                    cle = client.request_headers.get("Cle") or client.request_headers.get("cle")
             except Exception:
                 origin = None
-
-        resp = requests.post(f"{url}cle-ultra", json={"cle": cle}, timeout=5 )
-        resp.raise_for_status()
-        j = resp.json()
-        ok_ultra = j.get("access")
         
         if origin not in allowed_origins:
             ok = "false"
         else:
             ok = "true"
 
+        # Verificaation cle ultra
+        resp = requests.post(f"{url}cle-ultra", json={"cle": cle}, timeout=5 )
+        resp.raise_for_status()
+        j = resp.json()
+        ok_cle = j.get("access")
+
+        if ok_cle == "false":
+            # Verificaation cle web-socket
+            resp = requests.post(f"{url}cle-wbs", json={"cle": cle}, timeout=5 )
+            resp.raise_for_status()
+            j = resp.json()
+            ok_cle = j.get("access")
+        
         # If origin is not allowed, close connection immediately
         # NOTE: change this logic if you want to allow all origins in some environments
-        if ok_ultra == "false":
+        if ok_cle == "false":
             if level == "nothing" or level == "origin" and ok == "false":
                 self.logger.warning(f"Connexion refusée pour l'Origin: {origin}")
                 try:
