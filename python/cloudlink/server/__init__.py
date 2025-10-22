@@ -533,7 +533,7 @@ class server:
 
         # Variables à remplacer par tes valeurs
         url = os.getenv("URL")
-        cle = os.getenv("CLE")
+        cle_auth = os.getenv("CLE")
 
         def _Get_raw_allowed(url: str, cle: str, timeout: int = 10):
                 headers = {"Content-Type": "application/json"}
@@ -600,12 +600,18 @@ class server:
                     cle = client.request_headers.get("Cle") or client.request_headers.get("cle")
             except Exception:
                 origin = None
-        
+        allowed_origins = _parse_allowed(_Get_raw_allowed(url, cle_auth))
         if origin not in allowed_origins:
             ok = "false"
         else:
             ok = "true"
 
+        # Verification level
+        resp = requests.post(url, json={"cle": cle_auth}, timeout=5 )
+        resp.raise_for_status()
+        j = resp.json()
+        level = j.get("level")
+        
         # Verificaation cle ultra
         resp = requests.post(f"{url}cle-ultra", json={"cle": cle}, timeout=5 )
         resp.raise_for_status()
