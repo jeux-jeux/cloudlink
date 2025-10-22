@@ -40,10 +40,11 @@ def check_key(data: dict) -> bool:
     j = resp.json()
     level = j.get("level")
     if level == "code":
-        app.logger.debug("No expected CLE configured in env -> skipping check_key (open mode).")
-         return False
-      
         cle_received = (data or {}).get("cle")
+        if not cle_received
+            app.logger.debug("No expected CLE configured in env -> skipping check_key (open mode).")
+            return False
+      
         resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle_received}, timeout=5 )
         resp.raise_for_status()
         j = resp.json()
