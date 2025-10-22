@@ -29,6 +29,16 @@ USERNAME_TIMEOUT = int(os.getenv("USERNAME_TIMEOUT", "10"))
 ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "15"))
 TOTAL_ACTION_TIMEOUT = int(os.getenv("TOTAL_ACTION_TIMEOUT", "25"))
 
+# Definition des headers
+resp = requests.post(PROXY_AUTH_URL, json={"cle": CLE}, timeout=5 )
+resp.raise_for_status()
+j = resp.json()
+url = j.get("web_socket_server")
+cle_wbs = j.get("cle_wbs")
+WS_EXTRA_HEADERS = [
+    ("cle", cle_wbs),
+    ("User-Agent", "proxy_render_manager")
+]
 # -------------------------
 # Helpers
 # -------------------------
