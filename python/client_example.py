@@ -21,13 +21,10 @@ app.logger.setLevel(logging.DEBUG)
 # -------------------------
 # CLE attendue (pour authorisation des routes sending/checking)
 CLE = os.getenv("CLE")
+CLE_WEBSOCKET = os.getenv("CLE_WEBSOCKET")
 # URL du service d'auth/discovery (optionnel)
 PROXY_AUTH_URL = os.getenv("PROXY")  # ex: https://proxy-authentification-v3.onrender.com/
 
-WS_EXTRA_HEADERS = [
-    ("Origin", "https://cloudlink-manager.onrender.com/"),
-    ("User-Agent", "proxy_render_manager")
-]
 
 USERNAME_TIMEOUT = int(os.getenv("USERNAME_TIMEOUT", "10"))
 ACTION_TIMEOUT = int(os.getenv("ACTION_TIMEOUT", "15"))
@@ -37,22 +34,26 @@ TOTAL_ACTION_TIMEOUT = int(os.getenv("TOTAL_ACTION_TIMEOUT", "25"))
 # Helpers
 # -------------------------
 def check_key(data: dict) -> bool:
-    """Vérifie que le corps JSON contient une clé 'cle' valide."""
-    expected = cle
     # Si aucune clé attendue configurée, autorise (pratique pour tests)
     if not expected:
         app.logger.debug("No expected CLE configured in env -> skipping check_key (open mode).")
-        return True
-    received = (data or {}).get("cle")
-    ok = (received == expected)
-    if not ok:
-        resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle}, timeout=5 )
+        return False
+    cle_received = (data or {}).get("cle")
+
+    resp = requests.post(f"{PROXY_AUTH_URL}cle-ultra", json={"cle": cle_received}, timeout=5 )
+    resp.raise_for_status()
+    j = resp.json()
+    access = j.get("access")
+    if access == "false":
+        resp = requests.post(f"{PROXY_AUTH_URL}cle-iphone", json={"cle": cle_received}, timeout=5 )
         resp.raise_for_status()
         j = resp.json()
         access = j.get("access")
-        ok = (received == access)
-    if not ok:
+    if access == "false":
         app.logger.warning("check_key: invalid or missing cle in request body.")
+        ok = False
+    else:
+        ok = True
     return ok
 
 def fetch_cloudlink_ws_url():
@@ -63,6 +64,11 @@ def fetch_cloudlink_ws_url():
             resp.raise_for_status()
             j = resp.json()
             url = j.get("web_socket_server")
+            cle_wbs = j.get("cle_wbs")
+            WS_EXTRA_HEADERS = [
+                ("cle", cle_wbs),
+                ("User-Agent", "proxy_render_manager")
+            ]
             if url:
                 app.logger.info(f"fetch_cloudlink_ws_url: discovered websocket url: {url}")
                 return url
