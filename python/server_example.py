@@ -3,6 +3,15 @@ from cloudlink import server
 from cloudlink.server.protocols import clpv4, scratch
 import os
 import asyncio
+from flask import Flask, request, jsonify
+
+CLE = os.environ.get('CLE')
+PROXY_AUTH_URL = os.environ.get('URL')
+
+resp = requests.post(PROXY_AUTH_URL, json={"cle": CLE}, timeout=5 )
+resp.raise_for_status()
+j = resp.json()
+port_env = j.get("port")
 
 # --- Callbacks & Events ---
 class Callbacks:
@@ -112,7 +121,7 @@ if __name__ == "__main__":
     # Host et port Render
     host = "0.0.0.0"  # Écoute toutes les interfaces
     port_env = os.getenv("CLOUDLINK_PORT")
-    port = int(port_env) if port_env else 3000
+    port = int(port_env)
     server.allowed_origins = [
 		"tw-editor://.",
 		"tw-editor://",
