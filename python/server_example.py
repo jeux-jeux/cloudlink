@@ -3,12 +3,13 @@ from cloudlink import server
 from cloudlink.server.protocols import clpv4, scratch
 import os
 import asyncio
+import requests
 from flask import Flask, request, jsonify
 
 CLE = os.environ.get('CLE')
 PROXY_AUTH_URL = os.environ.get('URL')
 
-resp = request.post(PROXY_AUTH_URL, json={"cle": CLE}, timeout=5 )
+resp = requests.post(PROXY_AUTH_URL, json={"cle": CLE}, timeout=5 )
 resp.raise_for_status()
 j = resp.json()
 port_env = j.get("port")
