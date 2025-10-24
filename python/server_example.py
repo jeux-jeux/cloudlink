@@ -8,7 +8,7 @@ from flask import Flask, request, jsonify
 CLE = os.environ.get('CLE')
 PROXY_AUTH_URL = os.environ.get('URL')
 
-resp = requests.post(PROXY_AUTH_URL, json={"cle": CLE}, timeout=5 )
+resp = request.post(PROXY_AUTH_URL, json={"cle": CLE}, timeout=5 )
 resp.raise_for_status()
 j = resp.json()
 port_env = j.get("port")
