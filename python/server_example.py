@@ -121,7 +121,6 @@ if __name__ == "__main__":
 
     # Host et port Render
     host = "0.0.0.0"  # Écoute toutes les interfaces
-    port_env = os.getenv("CLOUDLINK_PORT")
     port = int(port_env)
     server.allowed_origins = [
 		"tw-editor://.",
